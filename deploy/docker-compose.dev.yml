@@ -1,0 +1,74 @@
+# Sribees Price Intel — development stack on the Contabo box (/opt/sribees-price-intel-dev),
+# the same shape as Sribees Finance.
+#
+# The box's public edge is sribees-express-dev's Caddy (it owns 80/443). This
+# stack publishes no host port: `web` joins the shared `sribees_default` network
+# under the alias sribees-price-intel-dev-web, and a Caddy block proxies to it.
+# `web` serves the admin app and passes /api/ to `api`.
+#
+# The `worker` runs the daily job at 05:00 Colombo time. It needs the internet
+# (competitor sites) and the Online dev API, so it also joins sribees_default.
+#
+# INTEL_IMAGE is set by the deploy (an image loaded on the box, tagged by commit).
+
+name: sribees-price-intel-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: intel
+      POSTGRES_USER: intel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intel -d intel"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  api:
+    image: ${INTEL_IMAGE:?set INTEL_IMAGE}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Accepting a suggestion calls Online's admin API.
+    networks: [internal, edge]
+
+  worker:
+    image: ${INTEL_IMAGE:?set INTEL_IMAGE}
+    restart: unless-stopped
+    command: ["python", "-m", "app.cli", "scheduler"]
+    env_file: .env
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal, edge]
+
+  web:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [api]
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web:/srv/web:ro
+    networks:
+      internal: {}
+      edge:
+        aliases: [sribees-price-intel-dev-web]
+
+volumes:
+  pgdata:
+
+networks:
+  internal: {}
+  edge:
+    name: sribees_default
+    external: true
