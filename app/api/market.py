@@ -18,6 +18,7 @@ from app.api.schemas import (
     ManualLinkIn,
     ManualPriceIn,
     MatchQueueItem,
+    MatchQueuePage,
     ProductPage,
     ProductRow,
     RunOut,
@@ -217,26 +218,56 @@ async def product_history(product_id: uuid.UUID, days: int = Query(default=90, l
 
 
 # ---------------------------------------------------------------- match queue
-@router.get("/matches/queue", response_model=list[MatchQueueItem])
-async def match_queue(competitor_id: int | None = None, limit: int = Query(default=50, le=200),
+def _queue_groups(competitor_id: int | None):
+    """One row per (product, shop) still waiting, best first."""
+    best = func.max(ProductMatch.score).label("best")
+    q = (select(ProductMatch.product_id, ProductMatch.competitor_id, best)
+         .join(Product, Product.product_id == ProductMatch.product_id)
+         .where(ProductMatch.status == "candidate", Product.is_active.is_(True))
+         .group_by(ProductMatch.product_id, ProductMatch.competitor_id))
+    if competitor_id:
+        q = q.where(ProductMatch.competitor_id == competitor_id)
+    return q
+
+
+@router.get("/matches/queue/count")
+async def match_queue_count(_: Principal = Depends(require("matches.read")),
+                            db: AsyncSession = Depends(get_db)):
+    total = await db.scalar(select(func.count()).select_from(_queue_groups(None).subquery()))
+    return {"waiting": total}
+
+
+@router.get("/matches/queue", response_model=MatchQueuePage)
+async def match_queue(competitor_id: int | None = None, page: int = Query(default=1, ge=1),
+                      limit: int = Query(default=20, ge=1, le=100),
                       _: Principal = Depends(require("matches.read")),
                       db: AsyncSession = Depends(get_db)):
-    """Best candidates first, so one confirmation clears the most likely pair."""
-    stmt = (select(ProductMatch, Product, Competitor.name)
+    """Products waiting for a yes / no, a page of (product, shop) groups at a time, the
+    surest first so one confirmation clears the most likely pair."""
+    groups = _queue_groups(competitor_id).subquery()
+    total = await db.scalar(select(func.count()).select_from(groups))
+    picked = (await db.execute(
+        select(groups.c.product_id, groups.c.competitor_id)
+        .order_by(groups.c.best.desc(), groups.c.product_id, groups.c.competitor_id)
+        .offset((page - 1) * limit).limit(limit))).all()
+    order = {(pid, cid): i for i, (pid, cid) in enumerate(picked)}
+    out = []
+    if picked:
+        rows = (await db.execute(
+            select(ProductMatch, Product, Competitor.name)
             .join(Product, Product.product_id == ProductMatch.product_id)
             .join(Competitor, Competitor.competitor_id == ProductMatch.competitor_id)
-            .where(ProductMatch.status == "candidate", Product.is_active.is_(True))
-            .order_by(ProductMatch.score.desc(), Product.name).limit(limit))
-    if competitor_id:
-        stmt = stmt.where(ProductMatch.competitor_id == competitor_id)
-    out = []
-    for m, prod, cname in (await db.execute(stmt)).all():
-        size = f"{prod.size_value.normalize():f} {prod.size_unit}" if prod.size_value else None
-        out.append(MatchQueueItem(
-            match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
-            product_size=size, competitor_id=m.competitor_id, competitor=cname,
-            score=m.score, item=ItemOut.model_validate(m.item)))
-    return out
+            .where(ProductMatch.status == "candidate",
+                   ProductMatch.product_id.in_({pid for pid, _ in picked})))).all()
+        rows = [r for r in rows if (r[0].product_id, r[0].competitor_id) in order]
+        rows.sort(key=lambda r: (order[(r[0].product_id, r[0].competitor_id)], -r[0].score))
+        for m, prod, cname in rows:
+            size = f"{prod.size_value.normalize():f} {prod.size_unit}" if prod.size_value else None
+            out.append(MatchQueueItem(
+                match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
+                product_size=size, competitor_id=m.competitor_id, competitor=cname,
+                score=m.score, item=ItemOut.model_validate(m.item)))
+    return MatchQueuePage(items=out, total=total, page=page, pages=max(1, -(-total // limit)))
 
 
 @router.post("/matches/{match_id}/confirm", status_code=204)

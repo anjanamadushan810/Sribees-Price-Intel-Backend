@@ -214,3 +214,14 @@ def test_production_needs_an_explicit_choice_to_drop_two_factor():
     with pytest.raises(ValidationError):
         Settings(**base)
     assert Settings(**base, allow_production_without_2fa=True).two_factor is False
+
+
+def test_a_shop_listing_the_same_product_twice_still_auto_matches():
+    ours = parse("Pepsi 1l")
+    twin_a, twin_b = parse("Pepsi 1L"), parse("PEPSI - 1 L")
+    a = matcher.Candidate("a", matcher.score(ours, twin_a))
+    b = matcher.Candidate("b", matcher.score(ours, twin_b))
+    assert matcher.auto_pick(ours, [(a, twin_a), (b, twin_b)]) is a
+    other = parse("Pepsi Max 1L")
+    close = matcher.Candidate("c", a.score - 0.01)
+    assert matcher.auto_pick(ours, [(a, twin_a), (close, other)]) is None

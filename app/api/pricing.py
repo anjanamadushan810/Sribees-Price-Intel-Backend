@@ -112,8 +112,10 @@ async def summary(branch_id: uuid.UUID | None = None,
         cost_missing=sum(1 for r in rows if r.cost_price is None and r.our_price is not None),
         pending_suggestions=await db.scalar(select(func.count()).select_from(Suggestion).where(
             Suggestion.branch_id == branch, Suggestion.status == "pending")),
-        match_queue=await db.scalar(select(func.count()).select_from(ProductMatch).where(
-            ProductMatch.status == "candidate")),
+        match_queue=await db.scalar(select(func.count()).select_from(
+            select(ProductMatch.product_id, ProductMatch.competitor_id)
+            .where(ProductMatch.status == "candidate")
+            .group_by(ProductMatch.product_id, ProductMatch.competitor_id).subquery())),
         sources_down=list(await db.scalars(select(Competitor.name).where(
             Competitor.is_enabled.is_(True), Competitor.status.in_(("failing", "blocked"))))),
         **count,

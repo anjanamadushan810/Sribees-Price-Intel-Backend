@@ -189,7 +189,11 @@ async def test_sync_then_collect_proposes_only_same_size(online):
 
 async def test_checker_confirms_manager_prices_and_online_changes(api, online):
     checker = await _login(api, "price_checker")
-    queue = (await api.get("/matches/queue", headers=checker)).json()
+    page = (await api.get("/matches/queue", headers=checker)).json()
+    assert page["total"] >= 1
+    count = (await api.get("/matches/queue/count", headers=checker)).json()
+    assert count["waiting"] == page["total"]
+    queue = page["items"]
     biscuit = next(q for q in queue if q["product_id"] == BISCUIT)
     assert (await api.post(f"/matches/{biscuit['match_id']}/confirm",
                            headers=checker)).status_code == 204

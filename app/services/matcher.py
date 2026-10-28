@@ -70,6 +70,9 @@ def auto_pick(ours: Parsed, ranked: list[tuple[Candidate, Parsed]]) -> Candidate
     best, parsed = ranked[0]
     if best.score < AUTO_SCORE or same_size(ours, parsed) is not True:
         return None
-    if len(ranked) > 1 and best.score - ranked[1][0].score < AUTO_LEAD:
+    # A shop listing the same product twice (same words, same size) is not a rival.
+    rivals = [(c, p) for c, p in ranked[1:]
+              if not (p.words == parsed.words and same_size(p, parsed) is True)]
+    if rivals and best.score - rivals[0][0].score < AUTO_LEAD:
         return None
     return best

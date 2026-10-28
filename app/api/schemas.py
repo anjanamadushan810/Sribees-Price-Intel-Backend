@@ -216,6 +216,13 @@ class MatchQueueItem(BaseModel):
     item: ItemOut
 
 
+class MatchQueuePage(BaseModel):
+    items: list[MatchQueueItem]
+    total: int  # (product, shop) pairs waiting
+    page: int
+    pages: int
+
+
 class ManualLinkIn(BaseModel):
     product_id: uuid.UUID
     item_id: uuid.UUID
