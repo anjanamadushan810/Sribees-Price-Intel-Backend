@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Principal, client_ip, require
-from app.api.market import _branch_for, _rows
+from app.api.market import _branch_for, _rows, stocked_branches
 from app.api.schemas import SuggestionOut, SummaryOut
 from app.core.db import get_db, get_sessionmaker
 from app.models import Branch, Competitor, Product, ProductMatch, Suggestion
@@ -100,8 +100,7 @@ async def reject(suggestion_id: uuid.UUID, request: Request,
 async def summary(branch_id: uuid.UUID | None = None,
                   p: Principal = Depends(require("reports.read")),
                   db: AsyncSession = Depends(get_db)):
-    branches = list(await db.scalars(select(Branch).where(Branch.is_active.is_(True))
-                                     .order_by(Branch.name)))
+    branches = await stocked_branches(db)
     branch = _branch_for(p, branch_id, branches)
     rows = await _rows(db, branch, None)
     count = {k: sum(1 for r in rows if r.position == k)

@@ -67,6 +67,7 @@ class BranchOut(ORM):
     branch_id: uuid.UUID
     name: str
     is_active: bool
+    products: int = 0  # products this branch stocks on Online (only on /branches)
 
 
 class UserOut(ORM):

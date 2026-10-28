@@ -11,7 +11,7 @@ from app.api.deps import Principal, client_ip, require
 from app.api.schemas import AuditOut, BranchOut, PricingSettings, UserIn, UserOut, UserPatch
 from app.core.db import get_db
 from app.core.security import hash_password
-from app.models import AuditLog, Branch, Setting, User, UserSession
+from app.models import AuditLog, Branch, BranchProduct, Setting, User, UserSession
 from app.services import audit
 from app.services.suggest import pricing_settings
 
@@ -23,11 +23,15 @@ router = APIRouter(tags=["admin"])
 async def list_branches(
     p: Principal = Depends(require("branches.read")), db: AsyncSession = Depends(get_db)
 ):
-    q = select(Branch).order_by(Branch.name)
+    stocked = (select(func.count()).where(BranchProduct.branch_id == Branch.branch_id,
+                                          BranchProduct.is_active.is_(True))
+               .correlate(Branch).scalar_subquery())
+    q = select(Branch, stocked).order_by(stocked.desc(), Branch.name)
     scope = p.branch_scope()
     if scope is not None:
         q = q.where(Branch.branch_id.in_(scope))
-    return list(await db.scalars(q))
+    return [BranchOut(branch_id=b.branch_id, name=b.name, is_active=b.is_active, products=n)
+            for b, n in (await db.execute(q)).all()]
 
 
 # ---------------------------------------------------------------- pricing rule

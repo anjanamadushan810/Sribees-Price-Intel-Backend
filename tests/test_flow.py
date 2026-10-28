@@ -352,3 +352,11 @@ async def test_price_app_signs_in_with_online_token_and_decides(api, monkeypatch
         assert user.role == "price_checker"
         m = await db.get(ProductMatch, uuid.UUID(nexmart["matched"]["match_id"]))
         assert m.status == "rejected" and m.decided_by == user.user_id
+
+
+async def test_branch_list_puts_the_stocking_branch_first(api):
+    admin = await _login(api, "super_admin")
+    branches = (await api.get("/branches", headers=admin)).json()
+    assert [b["products"] for b in branches] == sorted((b["products"] for b in branches),
+                                                       reverse=True)
+    assert branches[0]["products"] >= 1

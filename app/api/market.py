@@ -92,6 +92,16 @@ async def search_items(q: str = Query(min_length=2, max_length=80),
 
 
 # ---------------------------------------------------------------- products vs market
+async def stocked_branches(db: AsyncSession) -> list[Branch]:
+    """Active branches, the one stocking the most products first: the natural default
+    while only some branches sell online. Never a hard-wired branch."""
+    stocked = (select(func.count()).where(BranchProduct.branch_id == Branch.branch_id,
+                                          BranchProduct.is_active.is_(True))
+               .correlate(Branch).scalar_subquery())
+    return list(await db.scalars(select(Branch).where(Branch.is_active.is_(True))
+                                 .order_by(stocked.desc(), Branch.name)))
+
+
 def _branch_for(p: Principal, branch_id: uuid.UUID | None, branches: list[Branch]) -> uuid.UUID:
     if branch_id is not None:
         if not p.can_see_branch(branch_id):
@@ -168,8 +178,7 @@ async def list_products(
     p: Principal = Depends(require("prices.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    branches = list(await db.scalars(select(Branch).where(Branch.is_active.is_(True))
-                                     .order_by(Branch.name)))
+    branches = await stocked_branches(db)
     rows = await _rows(db, _branch_for(p, branch_id, branches), None)
     if q:
         words = q.lower().split()
@@ -191,8 +200,7 @@ async def list_products(
 async def get_product(product_id: uuid.UUID, branch_id: uuid.UUID | None = None,
                       p: Principal = Depends(require("prices.read")),
                       db: AsyncSession = Depends(get_db)):
-    branches = list(await db.scalars(select(Branch).where(Branch.is_active.is_(True))
-                                     .order_by(Branch.name)))
+    branches = await stocked_branches(db)
     rows = await _rows(db, _branch_for(p, branch_id, branches), [product_id])
     if not rows:
         raise HTTPException(status_code=404, detail="product not found")
