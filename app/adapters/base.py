@@ -97,6 +97,10 @@ class PoliteClient:
                 self._robots.parse([])  # no robots.txt: nothing is disallowed
         return self._robots.can_fetch(self.user_agent, f"{self.base_url}{path}")
 
+    async def allowed(self, path: str) -> bool:
+        """robots.txt says we may fetch `path` (also used before rendering a page)."""
+        return await self._allowed(path)
+
     async def get(self, path: str, params: dict | None = None) -> httpx.Response:
         if not await self._allowed(path):
             raise SourceBlocked(f"robots.txt disallows {path}")

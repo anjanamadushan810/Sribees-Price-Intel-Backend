@@ -10,7 +10,7 @@ import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -139,6 +139,8 @@ async def run(sessionmaker: async_sessionmaker, competitor_id: int,
             try:
                 if adapter.mode == "catalogue":
                     seen = await _run_catalogue(sessionmaker, competitor_id, adapter)
+                elif adapter.mode == "browser":
+                    seen = await _run_browser(sessionmaker, competitor_id, adapter)
                 else:
                     seen = await _run_search(sessionmaker, competitor_id, adapter)
             finally:
@@ -205,3 +207,52 @@ async def _run_search(sessionmaker, competitor_id: int, adapter) -> int:
             await propose_matches(db, competitor_id, [p.product_id])
         seen += len(items)
     return seen
+
+
+async def _run_browser(sessionmaker, competitor_id: int, adapter) -> int:
+    """Names from the shop's public list (one request) for matching; prices rendered
+    only for live matches whose review level says they are due."""
+    from app.adapters.browser import Renderer
+    from app.adapters.keells import Listed
+
+    now = datetime.now(UTC)
+    listed = await adapter.listing()
+    async with sessionmaker() as db, db.begin():
+        for it in listed:
+            parsed = parse(it.name)
+            values = {"name": it.name[:300], "url": it.url, "size_value": parsed.size_value,
+                      "size_unit": parsed.size_unit, "last_seen_at": now}
+            await db.execute(
+                insert(CompetitorItem)
+                .values(competitor_id=competitor_id, external_id=it.external_id[:120],
+                        in_stock=True, **values)
+                .on_conflict_do_update(index_elements=["competitor_id", "external_id"],
+                                       set_=values))
+        await propose_matches(db, competitor_id)
+        rows = (await db.execute(
+            select(CompetitorItem, Product.review_level)
+            .join(ProductMatch, ProductMatch.item_id == CompetitorItem.item_id)
+            .join(Product, Product.product_id == ProductMatch.product_id)
+            .where(ProductMatch.competitor_id == competitor_id,
+                   ProductMatch.status.in_(LIVE), Product.is_active.is_(True)))).all()
+    checked = {}
+    async with sessionmaker() as db:
+        for item_id, at in (await db.execute(
+                select(PriceObservation.item_id, func.max(PriceObservation.seen_at))
+                .where(PriceObservation.item_id.in_([i.item_id for i, _ in rows]))
+                .group_by(PriceObservation.item_id))).all():
+            checked[item_id] = at
+    due = [(item, level) for item, level in rows
+           if schedule.is_due(level, checked.get(item.item_id), now)]
+    if not due:
+        return len(listed)
+    async with Renderer(adapter.min_delay) as renderer:
+        for item, _level in due:
+            found = await adapter.price(renderer, Listed(item.external_id, item.name, item.url))
+            async with sessionmaker() as db, db.begin():
+                if found is None:
+                    await db.execute(update(CompetitorItem).where(
+                        CompetitorItem.item_id == item.item_id).values(in_stock=False))
+                else:
+                    await _store(db, competitor_id, [found], datetime.now(UTC))
+    return len(listed)

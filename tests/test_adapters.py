@@ -140,3 +140,31 @@ async def test_unexpected_status_fails_without_block():
     async with _client(handler) as client:
         with pytest.raises(SourceFailed):
             await client.get("/gone")
+
+
+def test_keells_sitemap_gives_codes_and_names():
+    from app.adapters import keells
+
+    items = keells.parse_sitemap((FIX / "keells_sitemap.xml").read_text("utf-8"))
+    assert len(items) == 5
+    first = items[0]
+    assert first.external_id == "112840"
+    assert first.name == "Md Nectar Orange 1L"
+    assert "&amp;" not in first.url and first.url.startswith("https://keellssuper.com/productDetail")
+
+
+def test_keells_slug_keeps_sizes():
+    from app.adapters.keells import slug_name
+    from app.services.normalize import parse
+
+    assert slug_name("ANCHOR_MILK_POWDER_400G") == "Anchor Milk Powder 400G"
+    assert parse(slug_name("ANCHOR_MILK_POWDER_400G")).size_value == D("400.000")
+
+
+def test_keells_name_may_contain_ampersand():
+    from app.adapters import keells
+
+    xml = ("<urlset><url><loc>https://keellssuper.com/productDetail?itemcode=118742"
+           "&amp;J_&amp;_J_BABY_MILK_SOAP_100G</loc></url></urlset>")
+    (item,) = keells.parse_sitemap(xml)
+    assert item.external_id == "118742" and item.name == "J & J Baby Milk Soap 100G"

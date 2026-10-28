@@ -16,6 +16,10 @@ RUN mkdir app && touch app/__init__.py \
     && pip uninstall -y sribees-price-intel \
     && rm -rf app
 
+# Chromium for the shops whose prices only appear after their page's JavaScript runs.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
+
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
