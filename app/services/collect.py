@@ -32,6 +32,7 @@ from app.services.normalize import Parsed, barcode_of, parse
 log = logging.getLogger("intel.collect")
 LIVE = ("auto", "confirmed")
 BATCH = 200
+MAX_FAILURES_IN_A_ROW = 5
 
 
 async def _store(db: AsyncSession, competitor_id: int, items: list[ListedItem],
@@ -254,9 +255,19 @@ async def _run_search(sessionmaker, competitor_id: int, adapter) -> int:
         checked = dict((await db.execute(select(SearchCheck.product_id, SearchCheck.checked_at)
                         .where(SearchCheck.competitor_id == competitor_id))).all())
     due = [p for p in products if schedule.is_due(p.review_level, checked.get(p.product_id), now)]
-    seen = 0
+    seen, failures_in_a_row = 0, 0
     for p in due:
-        items = await adapter.search(search_query(p.name))
+        try:
+            items = await adapter.search(search_query(p.name))
+        except SourceFailed as exc:
+            # One slow or broken page skips that product (it stays due for the next run);
+            # only a shop that keeps failing ends the run. A block still ends it at once.
+            failures_in_a_row += 1
+            log.warning("search for %r failed: %s", p.name, exc)
+            if failures_in_a_row >= MAX_FAILURES_IN_A_ROW:
+                raise
+            continue
+        failures_in_a_row = 0
         async with sessionmaker() as db, db.begin():
             await _store(db, competitor_id, items, now)
             await db.execute(insert(SearchCheck).values(

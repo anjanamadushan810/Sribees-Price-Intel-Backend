@@ -360,3 +360,24 @@ async def test_branch_list_puts_the_stocking_branch_first(api):
     assert [b["products"] for b in branches] == sorted((b["products"] for b in branches),
                                                        reverse=True)
     assert branches[0]["products"] >= 1
+
+
+async def test_one_failing_search_page_does_not_end_the_run():
+    from app.adapters.base import SourceFailed
+    from app.services.collect import _run_search
+
+    class Flaky:
+        mode = "search"
+        calls = 0
+
+        async def search(self, query):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise SourceFailed("could not render one page")
+            return []
+
+    async with get_sessionmaker()() as db:
+        arpico = await db.scalar(
+            select(Competitor.competitor_id).where(Competitor.code == "arpico"))
+    await _run_search(get_sessionmaker(), arpico, Flaky())
+    assert Flaky.calls >= 2  # carried on after the failure
