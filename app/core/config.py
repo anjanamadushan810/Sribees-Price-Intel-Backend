@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     lockout_minutes: int = 15
     cors_origins: list[str] = []
     totp_issuer: str = "Sribees Price Intel"
-    # Two-step sign-in. Off only on a development server with no real data.
+    # Two-step sign-in. Off only on a development server with no real data -- or, in
+    # production, when the owner chooses it on purpose (2026-10-28: QA signs in often)
+    # by also setting ALLOW_PRODUCTION_WITHOUT_2FA=true.
     two_factor: bool = True
+    allow_production_without_2fa: bool = False
 
     # SRIBEESonline admin API, reached with a dedicated admin account that the
     # owner creates for this service (never a person's login).
@@ -42,8 +45,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _production_keeps_two_factor(self) -> "Settings":
-        if self.environment == "production" and not self.two_factor:
-            raise ValueError("TWO_FACTOR cannot be off in production")
+        if (self.environment == "production" and not self.two_factor
+                and not self.allow_production_without_2fa):
+            raise ValueError("TWO_FACTOR cannot be off in production unless "
+                             "ALLOW_PRODUCTION_WITHOUT_2FA=true is set on purpose")
         return self
 
 

@@ -201,3 +201,16 @@ def test_sure_match_is_automatic_only_with_equal_size_and_a_clear_lead():
     assert matcher.auto_pick(ours, [(matcher.Candidate("c", 0.99), unsized)]) is None
     weak = matcher.Candidate("d", 0.9)
     assert matcher.auto_pick(ours, [(weak, same)]) is None
+
+
+def test_production_needs_an_explicit_choice_to_drop_two_factor():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    base = {"database_url": "postgresql+asyncpg://x/y", "jwt_secret": "x" * 40,
+            "totp_encryption_key": "k", "environment": "production", "two_factor": False}
+    with pytest.raises(ValidationError):
+        Settings(**base)
+    assert Settings(**base, allow_production_without_2fa=True).two_factor is False
