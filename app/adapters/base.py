@@ -167,6 +167,13 @@ class Adapter:
         self.client = client
         client.delay = max(client.delay, self.min_delay)
 
+    async def __aenter__(self) -> "Adapter":
+        """Adapters that need a browser start it here; the run wraps them in `async with`."""
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
     def catalogue(self) -> AsyncIterator[ListedItem]:  # pragma: no cover - interface
         raise NotImplementedError
 

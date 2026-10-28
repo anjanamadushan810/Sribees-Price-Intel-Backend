@@ -137,12 +137,13 @@ async def run(sessionmaker: async_sessionmaker, competitor_id: int,
             if adapter is None:
                 raise SourceFailed(f"adapter '{adapter_name}' is not written yet")
             try:
-                if adapter.mode == "catalogue":
-                    seen = await _run_catalogue(sessionmaker, competitor_id, adapter)
-                elif adapter.mode == "browser":
-                    seen = await _run_browser(sessionmaker, competitor_id, adapter)
-                else:
-                    seen = await _run_search(sessionmaker, competitor_id, adapter)
+                async with adapter:
+                    if adapter.mode == "catalogue":
+                        seen = await _run_catalogue(sessionmaker, competitor_id, adapter)
+                    elif adapter.mode == "browser":
+                        seen = await _run_browser(sessionmaker, competitor_id, adapter)
+                    else:
+                        seen = await _run_search(sessionmaker, competitor_id, adapter)
             finally:
                 requests = client.requests
     except SourceBlocked as exc:

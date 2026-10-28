@@ -168,3 +168,22 @@ def test_keells_name_may_contain_ampersand():
            "&amp;J_&amp;_J_BABY_MILK_SOAP_100G</loc></url></urlset>")
     (item,) = keells.parse_sitemap(xml)
     assert item.external_id == "118742" and item.name == "J & J Baby Milk Soap 100G"
+
+
+def test_cargills_card_reads_price_mrp_and_pack():
+    from app.adapters.cargills import parse_card
+
+    item = parse_card({"name": "Ambewela Non Fat Milk", "pack": "1.00 l",
+                       "prices": "Rs. 570.00 MRP: Rs. 600.00",
+                       "href": "/ProductDetails/Dairy/Ambewela-Non-Fat-Milk?ID=ogz9ml",
+                       "out": False},
+                      "https://cargillsonline.com")
+    assert item.price == D("570.00") and item.mrp == D("600.00")
+    assert item.url == "https://cargillsonline.com/ProductDetails/Dairy/Ambewela-Non-Fat-Milk?ID=ogz9ml"
+    from app.services.normalize import parse
+    assert parse(item.name, item.pack).size_value == D("1000.000")
+    big = parse_card({"name": "Diamond Milk Powder", "pack": "400.00 g",
+                      "prices": "Rs. 1,200.50 MRP: Rs. 1225.00", "href": "/ProductDetails/x?ID=1"},
+                     "https://cargillsonline.com")
+    assert big.price == D("1200.50")
+    assert parse_card({"name": "x", "prices": "", "href": "/p"}, "https://c") is None
