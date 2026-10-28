@@ -42,6 +42,13 @@ _STOP = {
     "the", "and", "with", "of", "for", "new", "pack", "packet", "pkt", "bottle", "btl", "tin",
     "jar", "box", "bag", "pouch", "sachet", "brand", "pcs", "pc", "nos", "each", "free",
 }
+# What the product comes in. Not a matching word, but two titles that each name a
+# different one (Box vs Pouch, Packet vs Tin) are different products.
+_PACK_KINDS = {
+    "box": "box", "pouch": "pouch", "packet": "packet", "pkt": "packet", "tin": "tin",
+    "bottle": "bottle", "btl": "bottle", "jar": "jar", "bag": "bag", "sachet": "sachet",
+    "can": "can", "bib": "bag", "tube": "tube", "refill": "refill",
+}
 _BARCODE = re.compile(r"^\d{8}$|^\d{12,14}$")
 
 
@@ -50,6 +57,7 @@ class Parsed:
     words: frozenset[str]
     size_value: Decimal | None
     size_unit: str | None
+    packs: frozenset[str] = frozenset()
 
 
 def _ascii(text: str) -> str:
@@ -74,10 +82,10 @@ def parse_size(text: str) -> tuple[Decimal | None, str | None]:
 def parse(name: str, pack: str | None = None) -> Parsed:
     size_value, size_unit = parse_size(f"{name} {pack or ''}")
     text = _SIZE.sub(" ", _ascii(name))
-    words = frozenset(
-        w for w in _WORD.findall(text) if w not in _STOP and not (w.isdigit() and len(w) < 3)
-    )
-    return Parsed(words=words, size_value=size_value, size_unit=size_unit)
+    raw = _WORD.findall(text)
+    words = frozenset(w for w in raw if w not in _STOP and not (w.isdigit() and len(w) < 3))
+    packs = frozenset(_PACK_KINDS[w] for w in raw if w in _PACK_KINDS)
+    return Parsed(words=words, size_value=size_value, size_unit=size_unit, packs=packs)
 
 
 def barcode_of(code: str | None) -> str | None:

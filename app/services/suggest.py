@@ -44,7 +44,7 @@ async def refresh(db: AsyncSession) -> dict:
     pending = {(s.branch_id, s.product_id): s for s in await db.scalars(
         select(Suggestion).where(Suggestion.status == "pending"))}
     counts = {"suggest": 0, "cheaper": 0, "cost_missing": 0, "at_floor": 0, "no_data": 0,
-              "new": 0}
+              "check": 0, "new": 0}
 
     rows = await db.scalars(select(BranchProduct).where(
         BranchProduct.is_active.is_(True), BranchProduct.selling_price.is_not(None)))

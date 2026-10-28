@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 RUPEE = Decimal("1")
+# A shop price under half of ours is more likely a wrong match or a wrong price on our
+# side (a placeholder, a different pack) than a real bargain: never chase it blindly.
+OUTLIER_SHARE = Decimal("0.5")
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,7 @@ class Offer:
 @dataclass(frozen=True)
 class Verdict:
     # suggest | cheaper (we already win) | cost_missing | at_floor | no_data
+    # | check (the only cheaper prices are implausibly low: a person should look)
     outcome: str
     suggested_price: Decimal | None = None
     floor_price: Decimal | None = None
@@ -38,7 +42,10 @@ def decide(
 ) -> Verdict:
     if not offers:
         return Verdict("no_data")
-    cheapest = min(offers, key=lambda o: (o.price, o.competitor_id))
+    plausible = [o for o in offers if o.price >= current * OUTLIER_SHARE]
+    if not plausible:
+        return Verdict("check", cheapest=min(offers, key=lambda o: (o.price, o.competitor_id)))
+    cheapest = min(plausible, key=lambda o: (o.price, o.competitor_id))
     if current <= cheapest.price:
         return Verdict("cheaper", cheapest=cheapest)
     if cost is None:

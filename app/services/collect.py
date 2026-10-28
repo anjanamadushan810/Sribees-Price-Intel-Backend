@@ -87,7 +87,7 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
     items = list(await db.scalars(
         select(CompetitorItem).where(CompetitorItem.competitor_id == competitor_id)))
     by_barcode = {i.barcode: i for i in items if i.barcode}
-    parsed_items = {i.item_id: Parsed(parse(i.name).words, i.size_value, i.size_unit)
+    parsed_items = {i.item_id: _with_size(parse(i.name), i.size_value, i.size_unit)
                     for i in items}
     index: dict[str, list[uuid.UUID]] = defaultdict(list)
     for item_id, parsed in parsed_items.items():
@@ -104,7 +104,7 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
             ).on_conflict_do_nothing())
             created += result.rowcount or 0
             continue
-        ours = Parsed(parse(p.name).words, p.size_value, p.size_unit)
+        ours = _with_size(parse(p.name), p.size_value, p.size_unit)
         pool = {item_id for w in ours.words for item_id in index.get(w, ())}
         ranked = matcher.best_candidates(ours, [(i, parsed_items[i]) for i in pool])
         sure = matcher.auto_pick(ours, [(c, parsed_items[c.key]) for c in ranked])
@@ -146,9 +146,9 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
     promoted = 0
     for pairs in by_product.values():
         prod = pairs[0][1]
-        ours = Parsed(parse(prod.name).words, prod.size_value, prod.size_unit)
+        ours = _with_size(parse(prod.name), prod.size_value, prod.size_unit)
         ranked = [(matcher.Candidate(m, float(m.score)),
-                   Parsed(parse(m.item.name).words, m.item.size_value, m.item.size_unit))
+                   _with_size(parse(m.item.name), m.item.size_value, m.item.size_unit))
                   for m, _ in pairs]
         sure = matcher.auto_pick(ours, ranked)
         if sure is None:
@@ -162,6 +162,12 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
         await _seed_history(db, sure.key.item_id)
         promoted += 1
     return promoted
+
+
+def _with_size(parsed: Parsed, size_value, size_unit) -> Parsed:
+    """The title's words and pack kind with the size we stored (it may come from a
+    separate pack field or Online's weight, not the title)."""
+    return Parsed(parsed.words, size_value, size_unit, parsed.packs)
 
 
 def search_query(name: str) -> str:

@@ -225,3 +225,24 @@ def test_a_shop_listing_the_same_product_twice_still_auto_matches():
     other = parse("Pepsi Max 1L")
     close = matcher.Candidate("c", a.score - 0.01)
     assert matcher.auto_pick(ours, [(a, twin_a), (close, other)]) is None
+
+
+def test_implausibly_cheap_prices_are_not_chased():
+    # Our placeholder Rs 1,000 rice against a real Rs 200: look, do not cut.
+    v = pricing.decide(current=D("1000"), cost=D("150"), offers=_offers("200"),
+                       min_margin_pct=D("5"))
+    assert v.outcome == "check" and v.suggested_price is None
+    # A plausible price next to an outlier still drives the suggestion.
+    v = pricing.decide(current=D("1000"), cost=D("150"), offers=_offers("200", "900"),
+                       min_margin_pct=D("5"))
+    assert v.outcome == "suggest" and v.suggested_price == D("900")
+
+
+def test_different_pack_kinds_are_never_automatic():
+    ours = parse("Lakspray Full Cream Milk Powder Box 400g")
+    theirs = parse("Lakspray Full Cream Milk Powder Pouch 400G")
+    best = matcher.Candidate("a", matcher.score(ours, theirs))
+    assert best.score >= matcher.AUTO_SCORE
+    assert matcher.auto_pick(ours, [(best, theirs)]) is None
+    plain = parse("Lakspray Full Cream Milk Powder 400g")  # no pack named: fine
+    assert matcher.auto_pick(plain, [(best, theirs)]) is best
