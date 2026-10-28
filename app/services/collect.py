@@ -68,8 +68,9 @@ async def _store(db: AsyncSession, competitor_id: int, items: list[ListedItem],
 
 async def propose_matches(db: AsyncSession, competitor_id: int,
                           product_ids: list[uuid.UUID] | None = None) -> int:
-    """Barcode-equal pairs become 'auto'; good name matches become 'candidate' for the
-    Price Checker. A pair once rejected is never proposed again (unique pair row)."""
+    """Barcode-equal pairs and sure name matches (matcher.auto_pick) become 'auto'; other
+    good name matches become 'candidate' for a person. A pair once rejected is never
+    proposed again (unique pair row)."""
     products_q = select(Product).where(Product.is_active.is_(True))
     if product_ids is not None:
         products_q = products_q.where(Product.product_id.in_(product_ids))
@@ -79,8 +80,9 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
     pending = set(await db.scalars(select(ProductMatch.product_id).where(
         ProductMatch.competitor_id == competitor_id, ProductMatch.status == "candidate")))
     todo = [p for p in products if p.product_id not in already and p.product_id not in pending]
+    promoted = await _promote_sure_candidates(db, competitor_id, pending)
     if not todo:
-        return 0
+        return promoted
 
     items = list(await db.scalars(
         select(CompetitorItem).where(CompetitorItem.competitor_id == competitor_id)))
@@ -104,13 +106,62 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
             continue
         ours = Parsed(parse(p.name).words, p.size_value, p.size_unit)
         pool = {item_id for w in ours.words for item_id in index.get(w, ())}
-        for c in matcher.best_candidates(ours, [(i, parsed_items[i]) for i in pool]):
+        ranked = matcher.best_candidates(ours, [(i, parsed_items[i]) for i in pool])
+        sure = matcher.auto_pick(ours, [(c, parsed_items[c.key]) for c in ranked])
+        for c in [sure] if sure else ranked:
             result = await db.execute(insert(ProductMatch).values(
                 product_id=p.product_id, item_id=c.key, competitor_id=competitor_id,
-                status="candidate", method="name", score=c.score,
+                status="auto" if sure else "candidate", method="name", score=c.score,
             ).on_conflict_do_nothing())
             created += result.rowcount or 0
-    return created
+            if sure and result.rowcount:
+                await _seed_history(db, sure.key)
+    return created + promoted
+
+
+async def _seed_history(db: AsyncSession, item_id: uuid.UUID) -> None:
+    """A newly matched item starts its history with the price it was last seen at."""
+    item = await db.get(CompetitorItem, item_id)
+    if item is not None and item.last_price is not None:
+        db.add(PriceObservation(item_id=item.item_id, price=item.last_price, mrp=item.last_mrp,
+                                in_stock=item.in_stock, source="scrape",
+                                seen_at=item.last_seen_at))
+
+
+async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
+                                   product_ids: set[uuid.UUID]) -> int:
+    """Candidates proposed before the auto rule (or before a better title arrived) are
+    re-judged: a sure one becomes 'auto' and its rivals leave the queue (the product is
+    matched at this shop now, so they are never proposed again)."""
+    if not product_ids:
+        return 0
+    rows = (await db.execute(
+        select(ProductMatch, Product).join(Product, Product.product_id == ProductMatch.product_id)
+        .where(ProductMatch.competitor_id == competitor_id, ProductMatch.status == "candidate",
+               ProductMatch.product_id.in_(product_ids))
+        .order_by(ProductMatch.product_id, ProductMatch.score.desc()))).all()
+    by_product: dict[uuid.UUID, list] = defaultdict(list)
+    for m, prod in rows:
+        by_product[prod.product_id].append((m, prod))
+    promoted = 0
+    for pairs in by_product.values():
+        prod = pairs[0][1]
+        ours = Parsed(parse(prod.name).words, prod.size_value, prod.size_unit)
+        ranked = [(matcher.Candidate(m, float(m.score)),
+                   Parsed(parse(m.item.name).words, m.item.size_value, m.item.size_unit))
+                  for m, _ in pairs]
+        sure = matcher.auto_pick(ours, ranked)
+        if sure is None:
+            continue
+        for m, _ in pairs:
+            if m is sure.key:
+                m.status = "auto"
+            else:
+                await db.delete(m)
+        await db.flush()
+        await _seed_history(db, sure.key.item_id)
+        promoted += 1
+    return promoted
 
 
 def search_query(name: str) -> str:

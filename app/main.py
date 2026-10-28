@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.adapters import botauth
-from app.api import admin, auth, market, pricing
+from app.api import admin, app_api, auth, market, pricing
 from app.core.config import get_settings
 from app.core.db import get_engine
 from app.services.errors import IntelError
@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     app.include_router(market.router)
     app.include_router(pricing.router)
+    app.include_router(app_api.router)
     return app
 
 

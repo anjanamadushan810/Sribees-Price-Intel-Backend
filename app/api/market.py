@@ -34,7 +34,7 @@ from app.models import (
     ScrapeRun,
     Suggestion,
 )
-from app.services import audit, schedule
+from app.services import audit, matches, schedule
 from app.services.suggest import pricing_settings, supersede_for
 
 router = APIRouter(tags=["market"])
@@ -239,39 +239,11 @@ async def match_queue(competitor_id: int | None = None, limit: int = Query(defau
     return out
 
 
-async def _seed_history(db: AsyncSession, item: CompetitorItem) -> None:
-    """A newly confirmed item starts its history with the price it was seen at."""
-    if item.last_price is not None:
-        db.add(PriceObservation(item_id=item.item_id, price=item.last_price, mrp=item.last_mrp,
-                                in_stock=item.in_stock, source="scrape",
-                                seen_at=item.last_seen_at))
-
-
 @router.post("/matches/{match_id}/confirm", status_code=204)
 async def confirm_match(match_id: uuid.UUID, request: Request,
                         p: Principal = Depends(require("matches.decide")),
                         db: AsyncSession = Depends(get_db)):
-    m = await db.get(ProductMatch, match_id, with_for_update=True)
-    if m is None or m.status != "candidate":
-        raise HTTPException(status_code=409, detail="this match is no longer waiting")
-    live = await db.scalar(select(ProductMatch).where(
-        ProductMatch.product_id == m.product_id, ProductMatch.competitor_id == m.competitor_id,
-        ProductMatch.status.in_(LIVE)))
-    if live is not None:
-        raise HTTPException(status_code=409, detail="this product is already matched there")
-    now = datetime.now(UTC)
-    m.status, m.decided_by, m.decided_at = "confirmed", p.user_id, now
-    # The other candidates for this product at this shop are now wrong.
-    others = await db.scalars(select(ProductMatch).where(
-        ProductMatch.product_id == m.product_id, ProductMatch.competitor_id == m.competitor_id,
-        ProductMatch.status == "candidate", ProductMatch.match_id != m.match_id))
-    for o in others:
-        o.status, o.decided_by, o.decided_at = "rejected", p.user_id, now
-    await _seed_history(db, m.item)
-    await audit.record(db, user_id=p.user_id, action="match.confirm", entity="match",
-                       entity_id=match_id, after={"product_id": str(m.product_id),
-                                                  "item": m.item.name},
-                       ip_address=client_ip(request))
+    await matches.confirm(db, match_id, p.user_id, client_ip(request))
 
 
 @router.post("/matches/{match_id}/reject", status_code=204)
@@ -279,14 +251,7 @@ async def reject_match(match_id: uuid.UUID, request: Request,
                        p: Principal = Depends(require("matches.decide")),
                        db: AsyncSession = Depends(get_db)):
     """Also undoes a confirmed or auto match that turned out wrong."""
-    m = await db.get(ProductMatch, match_id, with_for_update=True)
-    if m is None or m.status == "rejected":
-        raise HTTPException(status_code=409, detail="this match is already rejected")
-    before = m.status
-    m.status, m.decided_by, m.decided_at = "rejected", p.user_id, datetime.now(UTC)
-    await audit.record(db, user_id=p.user_id, action="match.reject", entity="match",
-                       entity_id=match_id, before={"status": before},
-                       ip_address=client_ip(request))
+    await matches.reject(db, match_id, p.user_id, client_ip(request))
 
 
 @router.post("/matches", status_code=201)
@@ -311,7 +276,7 @@ async def link_by_hand(body: ManualLinkIn, request: Request,
         db.add(m)
     m.status, m.decided_by, m.decided_at = "confirmed", p.user_id, now
     await db.flush()
-    await _seed_history(db, item)
+    await matches.seed_history(db, item)
     await audit.record(db, user_id=p.user_id, action="match.link", entity="match",
                        entity_id=m.match_id, after={"product_id": str(body.product_id),
                                                     "item": item.name},

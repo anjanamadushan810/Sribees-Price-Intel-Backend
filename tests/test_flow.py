@@ -51,7 +51,7 @@ class FakeOnline:
         r = self.rows[(branch, product)]
         base = r["branch_price"] if r["branch_price"] is not None else r["global_price"]
         return {"inventory_id": INV[branch], "product_id": product, "branch_id": branch,
-                "product_name": "Maliban Chocolate Cream Biscuit 400g", "sku": "MAL-CC-400",
+                "product_name": "Maliban Chocolate Cream 400g", "sku": "MAL-CC-400",
                 "branch_price": r["branch_price"], "global_price": r["global_price"],
                 "effective_price": base, "effective_discount": r["discount_percentage"],
                 "discount_percentage": r["discount_percentage"], "is_on_sale": r["is_on_sale"],
@@ -69,7 +69,7 @@ class FakeOnline:
                 {"branch_id": OTHER, "name": "Other", "is_active": True}]}})
         if path.endswith("/admin/products"):
             return httpx.Response(200, json={"data": {"pagination": page, "products": [
-                {"product_id": BISCUIT, "name": "Maliban Chocolate Cream Biscuit 400g",
+                {"product_id": BISCUIT, "name": "Maliban Chocolate Cream 400g",
                  "sku": "MAL-CC-400", "compare_at_price": 540, "price_review_level": "daily",
                  "is_active": True},
                 {"product_id": SOAP, "name": "Sunlight Soap", "sku": "4006381333931",
@@ -100,6 +100,8 @@ def nexmart_shop(request: httpx.Request) -> httpx.Response:
          "brand": "Maliban", "price": 480.5, "mrp": 540, "inStock": True, "enabled": True},
         {"sku": "BISC-005", "name": "MALIBAN BISCUIT CHOCOLATE CREAM - 200 g", "pack": "200 g",
          "brand": "Maliban", "price": 250, "mrp": 270, "inStock": True, "enabled": True},
+        {"sku": "SOAP-2", "name": "SUNLIGHT SOAP - 110 g", "price": 95, "inStock": True,
+         "enabled": True},
         {"sku": "SOAP-1", "name": "Lux Soap 100g", "price": 150, "inStock": True,
          "enabled": True},
     ]})
@@ -169,15 +171,20 @@ async def test_sync_then_collect_proposes_only_same_size(online):
         nexmart = await db.scalar(select(Competitor).where(Competitor.code == "nexmart"))
     run = await collect.run(get_sessionmaker(), nexmart.competitor_id,
                             transport=httpx.MockTransport(nexmart_shop))
-    assert run.status == "ok" and run.items_seen == 3, run.error
+    assert run.status == "ok" and run.items_seen == 4, run.error
 
     async with get_sessionmaker()() as db:
         matches = list(await db.scalars(select(ProductMatch).where(
             ProductMatch.product_id == uuid.UUID(BISCUIT))))
         assert [m.item.name for m in matches] == ["MALIBAN BISCUIT CHOCOLATE CREAM - 400 g"]
         assert matches[0].status == "candidate"
-        # Nothing is matched yet, so no history is written.
-        assert not list(await db.scalars(select(PriceObservation)))
+        # "Sunlight Soap" (110 g from Online's weight) is a sure match: automatic, and its
+        # history starts with the price it was seen at.
+        (soap,) = list(await db.scalars(select(ProductMatch).where(
+            ProductMatch.product_id == uuid.UUID(SOAP))))
+        assert soap.status == "auto" and soap.method == "name"
+        (obs,) = list(await db.scalars(select(PriceObservation)))
+        assert obs.item_id == soap.item_id and obs.price == D("95.00")
 
 
 async def test_checker_confirms_manager_prices_and_online_changes(api, online):
@@ -301,3 +308,43 @@ async def test_suggestion_can_never_raise_a_price():
                           cost_price=D("50"), floor_price=D("53"), reason="match_cheapest"))
         with pytest.raises(IntegrityError):
             await db.flush()
+
+
+# ---------------------------------------------------------------- the Price app
+def _online_profiles(request: httpx.Request) -> httpx.Response:
+    """Online's /admin/auth/profile for three tokens: a manager, support staff, garbage."""
+    who = {"Bearer mgr-token": ("mgr@sribees.lk", "branch_manager"),
+           "Bearer staff-token": ("staff@sribees.lk", "customer_support")}
+    found = who.get(request.headers.get("authorization", ""))
+    if found is None:
+        return httpx.Response(401, json={"detail": "Invalid token"})
+    email, role = found
+    return httpx.Response(200, json={"success": True, "admin": {
+        "adminId": str(uuid.uuid4()), "email": email, "fullName": "Floor Manager",
+        "role": role, "isActive": True}})
+
+
+async def test_price_app_signs_in_with_online_token_and_decides(api, monkeypatch_module):
+    from app.api import app_api
+
+    monkeypatch_module.setattr(app_api, "_transport", httpx.MockTransport(_online_profiles))
+    url = f"/app/products/{BISCUIT}/shops"
+    assert (await api.get(url)).status_code == 401
+    assert (await api.get(url, headers={"Authorization": "Bearer junk"})).status_code == 401
+    assert (await api.get(url, headers={"Authorization": "Bearer staff-token"})).status_code == 403
+
+    mgr = {"Authorization": "Bearer mgr-token"}
+    view = (await api.get(url, headers=mgr)).json()
+    nexmart = next(s for s in view["shops"] if s["competitor"] == "Nexmart")
+    assert nexmart["matched_by"] == "confirmed" and nexmart["candidates"] == []
+    assert nexmart["matched"]["item"]["last_price"] == "480.50"
+
+    # The manager says the match is wrong: it is gone, and the decision is theirs.
+    after = (await api.post(f"/app/matches/{nexmart['matched']['match_id']}/reject",
+                            headers=mgr)).json()
+    assert next(s for s in after["shops"] if s["competitor"] == "Nexmart")["matched"] is None
+    async with get_sessionmaker()() as db:
+        user = await db.scalar(select(User).where(User.email == "mgr@sribees.lk"))
+        assert user.role == "price_checker"
+        m = await db.get(ProductMatch, uuid.UUID(nexmart["matched"]["match_id"]))
+        assert m.status == "rejected" and m.decided_by == user.user_id

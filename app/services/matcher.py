@@ -13,6 +13,10 @@ from app.services.normalize import Parsed
 # Below this a name is not worth a person's time.
 MIN_CANDIDATE_SCORE = 0.45
 CANDIDATES_PER_COMPETITOR = 3
+# Owner (VISION Q15): this sure, with both pack sizes known and equal, and clearly ahead
+# of the runner-up, a match needs no person.
+AUTO_SCORE = 0.95
+AUTO_LEAD = 0.05
 
 
 @dataclass(frozen=True)
@@ -56,3 +60,16 @@ def best_candidates(
     scored = [c for c in scored if c.score >= MIN_CANDIDATE_SCORE]
     scored.sort(key=lambda c: c.score, reverse=True)
     return scored[:limit]
+
+
+def auto_pick(ours: Parsed, ranked: list[tuple[Candidate, Parsed]]) -> Candidate | None:
+    """The best candidate when it may be matched without a person, else None.
+    `ranked` is best first, each with the competitor item's parsed title."""
+    if not ranked:
+        return None
+    best, parsed = ranked[0]
+    if best.score < AUTO_SCORE or same_size(ours, parsed) is not True:
+        return None
+    if len(ranked) > 1 and best.score - ranked[1][0].score < AUTO_LEAD:
+        return None
+    return best

@@ -186,3 +186,18 @@ def test_daily_run_is_at_five_in_colombo():
     assert seconds_until_next_run(before) == 30 * 60
     after = datetime(2026, 10, 27, 0, 0, tzinfo=UTC)  # 05:30 in Colombo
     assert seconds_until_next_run(after) == 23.5 * 3600
+
+
+def test_sure_match_is_automatic_only_with_equal_size_and_a_clear_lead():
+    ours = parse("Highland Butter Salted 200g")
+    same = parse("HIGHLAND BUTTER SALTED - 200 g")
+    rival = parse("Highland Butter Unsalted 200g")
+    best = matcher.Candidate("a", matcher.score(ours, same))
+    assert best.score >= matcher.AUTO_SCORE
+    assert matcher.auto_pick(ours, [(best, same)]) is best
+    close = matcher.Candidate("b", best.score - 0.01)
+    assert matcher.auto_pick(ours, [(best, same), (close, rival)]) is None  # no clear lead
+    unsized = parse("Highland Butter Salted")
+    assert matcher.auto_pick(ours, [(matcher.Candidate("c", 0.99), unsized)]) is None
+    weak = matcher.Candidate("d", 0.9)
+    assert matcher.auto_pick(ours, [(weak, same)]) is None
