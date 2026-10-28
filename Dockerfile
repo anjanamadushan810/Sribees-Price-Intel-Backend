@@ -1,6 +1,7 @@
 # Sribees Price Intel API. One image runs both the API (uvicorn) and the daily
 # scheduler (python -m app.cli scheduler); the compose file picks the command.
-FROM python:3.12-slim AS base
+# bookworm: the Debian release Playwright supports (trixie lacks its font packages).
+FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
