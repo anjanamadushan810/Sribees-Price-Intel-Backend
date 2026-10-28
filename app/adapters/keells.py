@@ -52,8 +52,9 @@ def parse_sitemap(xml: str) -> list[Listed]:
 
 
 class KeellsAdapter(Adapter):
-    mode = "browser"
+    mode = "sitemap"
     min_delay = 5.0
+    needs_browser = True
 
     async def listing(self) -> list[Listed]:
         resp = await self.client.get("/sitemap.xml")

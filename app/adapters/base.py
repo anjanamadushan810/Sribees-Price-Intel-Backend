@@ -151,8 +151,12 @@ def _retry_after(resp: httpx.Response) -> float | None:
 
 
 def _looks_challenged(text: str) -> bool:
+    """A challenge page is a near-empty page carrying a bot-check marker. Real pages may
+    load the same vendor script (Glomark serves Zenedge's script on every page)."""
     head = text[:4000].lower()
-    return any(marker in head for marker in _CHALLENGE_MARKERS)
+    if "just a moment" in head:
+        return True
+    return len(text) < 6000 and any(marker in head for marker in _CHALLENGE_MARKERS)
 
 
 class Adapter:

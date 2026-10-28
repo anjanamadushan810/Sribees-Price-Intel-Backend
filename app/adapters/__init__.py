@@ -2,6 +2,7 @@
 
 from app.adapters.base import Adapter, PoliteClient
 from app.adapters.cargills import CargillsAdapter
+from app.adapters.glomark import GlomarkAdapter
 from app.adapters.keells import KeellsAdapter
 from app.adapters.nexmart import NexmartAdapter
 from app.adapters.opencart import OpenCartAdapter
@@ -13,6 +14,7 @@ ADAPTERS: dict[str, type[Adapter]] = {
     "opencart": OpenCartAdapter,
     "keells": KeellsAdapter,
     "cargills": CargillsAdapter,
+    "glomark": GlomarkAdapter,
 }
 
 

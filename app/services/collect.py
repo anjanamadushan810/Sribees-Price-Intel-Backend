@@ -5,6 +5,7 @@ price_review_level says they are due. Every run leaves a scrape_runs row, and a
 blocked or broken source flips the competitor's status so the admin sees it.
 """
 
+import contextlib
 import logging
 import uuid
 from collections import defaultdict
@@ -140,8 +141,8 @@ async def run(sessionmaker: async_sessionmaker, competitor_id: int,
                 async with adapter:
                     if adapter.mode == "catalogue":
                         seen = await _run_catalogue(sessionmaker, competitor_id, adapter)
-                    elif adapter.mode == "browser":
-                        seen = await _run_browser(sessionmaker, competitor_id, adapter)
+                    elif adapter.mode == "sitemap":
+                        seen = await _run_sitemap(sessionmaker, competitor_id, adapter)
                     else:
                         seen = await _run_search(sessionmaker, competitor_id, adapter)
             finally:
@@ -210,9 +211,9 @@ async def _run_search(sessionmaker, competitor_id: int, adapter) -> int:
     return seen
 
 
-async def _run_browser(sessionmaker, competitor_id: int, adapter) -> int:
-    """Names from the shop's public list (one request) for matching; prices rendered
-    only for live matches whose review level says they are due."""
+async def _run_sitemap(sessionmaker, competitor_id: int, adapter) -> int:
+    """Names from the shop's public sitemap (one request) for matching; product pages
+    read (rendered, when the shop needs a browser) only for live matches that are due."""
     from app.adapters.browser import Renderer
     from app.adapters.keells import Listed
 
@@ -247,7 +248,9 @@ async def _run_browser(sessionmaker, competitor_id: int, adapter) -> int:
            if schedule.is_due(level, checked.get(item.item_id), now)]
     if not due:
         return len(listed)
-    async with Renderer(adapter.min_delay) as renderer:
+    async with contextlib.AsyncExitStack() as stack:
+        renderer = (await stack.enter_async_context(Renderer(adapter.min_delay))
+                    if adapter.needs_browser else None)
         for item, _level in due:
             found = await adapter.price(renderer, Listed(item.external_id, item.name, item.url))
             async with sessionmaker() as db, db.begin():

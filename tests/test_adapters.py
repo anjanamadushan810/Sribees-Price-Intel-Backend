@@ -187,3 +187,26 @@ def test_cargills_card_reads_price_mrp_and_pack():
                      "https://cargillsonline.com")
     assert big.price == D("1200.50")
     assert parse_card({"name": "x", "prices": "", "href": "/p"}, "https://c") is None
+
+
+def test_glomark_sitemap_and_product_json_ld():
+    from app.adapters import glomark
+
+    items = glomark.parse_sitemap((FIX / "glomark_sitemap.xml").read_text("utf-8"),
+                                  "https://glomark.lk")
+    assert len(items) == 4 and all(i.url.startswith("https://glomark.lk/") for i in items)
+    stevia = glomark.Listed("16832", "x", "https://glomark.lk/x/p/16832")
+    item = glomark.parse_product((FIX / "glomark_product.html").read_text("utf-8"), stevia)
+    assert item.price == D("250.00") and item.name == "SWEET'N SWEETNER STEVIA 50 SACHETS"
+    assert item.brand == "SWEET'N LOW" and item.in_stock is False
+    assert glomark.slug_name("sweet%2527n-sweetner-stevia-50-sachets") == \
+        "Sweet'n Sweetner Stevia 50 Sachets"
+
+
+def test_real_page_with_vendor_script_is_not_a_challenge():
+    from app.adapters.base import _looks_challenged
+
+    page = '<html><script src="/__zenedge/assets/f.js"></script>' + "x" * 10_000
+    assert not _looks_challenged(page)
+    assert _looks_challenged('<html><script src="/__zenedge/assets/f.js"></script></html>')
+    assert _looks_challenged("<title>Just a moment...</title>")
