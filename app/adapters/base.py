@@ -102,6 +102,13 @@ class PoliteClient:
         return await self._allowed(path)
 
     async def get(self, path: str, params: dict | None = None) -> httpx.Response:
+        return await self._request("GET", path, params=params)
+
+    async def post(self, path: str, **kwargs) -> httpx.Response:
+        """A read-only form post, the way a shop's own search box sends it."""
+        return await self._request("POST", path, **kwargs)
+
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         if not await self._allowed(path):
             raise SourceBlocked(f"robots.txt disallows {path}")
         waited = False
@@ -109,9 +116,10 @@ class PoliteClient:
             await self._pace()
             self.requests += 1
             try:
-                resp = await self._client.get(
-                    path, params=params,
-                    headers=botauth.request_headers(self._client.base_url.netloc.decode()))
+                resp = await self._client.request(
+                    method, path,
+                    headers=botauth.request_headers(self._client.base_url.netloc.decode()),
+                    **kwargs)
             except httpx.TransportError as exc:
                 if attempt == 2:
                     raise SourceFailed(f"network error: {exc.__class__.__name__}") from exc

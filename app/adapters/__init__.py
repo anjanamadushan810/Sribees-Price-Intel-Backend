@@ -6,7 +6,9 @@ from app.adapters.glomark import GlomarkAdapter
 from app.adapters.keells import KeellsAdapter
 from app.adapters.nexmart import NexmartAdapter
 from app.adapters.opencart import OpenCartAdapter
+from app.adapters.ranjan import RanjanAdapter
 from app.adapters.shopify import ShopifyAdapter
+from app.adapters.woocommerce import WooCommerceAdapter
 
 ADAPTERS: dict[str, type[Adapter]] = {
     "nexmart": NexmartAdapter,
@@ -15,6 +17,8 @@ ADAPTERS: dict[str, type[Adapter]] = {
     "keells": KeellsAdapter,
     "cargills": CargillsAdapter,
     "glomark": GlomarkAdapter,
+    "woocommerce": WooCommerceAdapter,
+    "ranjan": RanjanAdapter,
 }
 
 

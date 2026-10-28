@@ -210,3 +210,42 @@ def test_real_page_with_vendor_script_is_not_a_challenge():
     assert not _looks_challenged(page)
     assert _looks_challenged('<html><script src="/__zenedge/assets/f.js"></script></html>')
     assert _looks_challenged("<title>Just a moment...</title>")
+
+
+def test_woocommerce_page_reads_minor_units_and_barcode_sku():
+    from app.adapters import woocommerce
+    from app.services.normalize import barcode_of
+
+    items = woocommerce.parse_page(
+        json.loads((FIX / "woocommerce_page.json").read_text("utf-8")), "https://onlinekade.lk")
+    first = items[0]
+    assert first.price == D("450.00") and first.mrp is None  # regular == price
+    assert barcode_of(first.barcode) == "4791010001434"
+    assert first.url.startswith("https://onlinekade.lk/product/")
+    sale = woocommerce.parse_page([{"id": 1, "name": "X &amp; Y 1kg", "type": "simple",
+                                    "prices": {"price": "9000", "regular_price": "10000",
+                                               "currency_minor_unit": 2},
+                                    "is_in_stock": False}], "https://s")[0]
+    assert sale.name == "X & Y 1kg" and sale.price == D("90.00") and sale.mrp == D("100.00")
+    assert sale.in_stock is False
+
+
+def test_ranjan_search_cards():
+    from app.adapters import ranjan
+
+    items = ranjan.parse_search((FIX / "ranjan_search.html").read_text("utf-8"),
+                                "https://ranjanlanka.lk")
+    assert len(items) == 3
+    assert all(i.price > 0 and i.name for i in items)
+    assert items[0].url.startswith("https://ranjanlanka.lk/product/?product=")
+
+
+async def test_post_obeys_the_same_rules():
+    def handler(request: httpx.Request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /shop/\n")
+        return httpx.Response(200, text="ok")
+
+    async with _client(handler) as client:
+        with pytest.raises(SourceBlocked):
+            await client.post("/shop/", files={"search": (None, "milk")})
