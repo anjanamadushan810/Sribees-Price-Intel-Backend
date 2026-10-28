@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     scrape_delay_seconds: float = 2.0
     scrape_timeout_seconds: float = 20.0
     scrape_max_pages: int = 400
+    # Web Bot Auth (app/adapters/botauth.py): base64 raw Ed25519 private key, and the
+    # https origin that serves our public key directory. Both empty = unsigned.
+    web_bot_auth_key: str = ""
+    signature_agent: str = ""
 
     @model_validator(mode="after")
     def _production_keeps_two_factor(self) -> "Settings":

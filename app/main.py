@@ -1,11 +1,13 @@
+import json
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from app.adapters import botauth
 from app.api import admin, auth, market, pricing
 from app.core.config import get_settings
 from app.core.db import get_engine
@@ -69,6 +71,16 @@ def create_app() -> FastAPI:
         async with get_engine().connect() as conn:
             await conn.execute(text("SELECT 1"))
         return {"status": "ok"}
+
+    @app.get(botauth.DIRECTORY_PATH, include_in_schema=False)
+    async def key_directory(request: Request):
+        """Our Web Bot Auth public key, for shops that check our signatures."""
+        signed = botauth.directory(request.headers.get("host", ""))
+        if signed is None:
+            return JSONResponse(status_code=404, content={"detail": "signing is off"})
+        body, headers = signed
+        return Response(content=json.dumps(body), media_type=botauth.DIRECTORY_TYPE,
+                        headers=headers)
 
     app.include_router(auth.router)
     app.include_router(admin.router)

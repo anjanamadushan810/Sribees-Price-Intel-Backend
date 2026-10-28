@@ -14,6 +14,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 
+from app.adapters import botauth
 from app.core.config import get_settings
 
 
@@ -104,7 +105,9 @@ class PoliteClient:
             await self._pace()
             self.requests += 1
             try:
-                resp = await self._client.get(path, params=params)
+                resp = await self._client.get(
+                    path, params=params,
+                    headers=botauth.request_headers(self._client.base_url.netloc.decode()))
             except httpx.TransportError as exc:
                 if attempt == 2:
                     raise SourceFailed(f"network error: {exc.__class__.__name__}") from exc
