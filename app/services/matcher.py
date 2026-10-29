@@ -11,12 +11,22 @@ from decimal import Decimal
 from app.services.normalize import Parsed
 
 # Below this a name is not worth a person's time.
-MIN_CANDIDATE_SCORE = 0.45
+MIN_CANDIDATE_SCORE = 0.6
 CANDIDATES_PER_COMPETITOR = 3
 # Owner (VISION Q15): this sure, with both pack sizes known and equal, and clearly ahead
 # of the runner-up, a match needs no person.
 AUTO_SCORE = 0.95
 AUTO_LEAD = 0.05
+# Owner (2026-10-29): too many to check by hand. A price that agrees is the strongest
+# evidence two titles are one product -- and when a "wrong" flavour costs the same, the
+# comparison is still right. These words, though, make it a different kind of product.
+PRICE_AGREEMENT = Decimal("0.05")
+TYPE_WORDS = {
+    "sambol", "chips", "paste", "sauce", "oil", "juice", "cordial", "flakes", "curry",
+    "noodles", "soup", "jam", "cubes", "pickle", "chutney", "seeds", "pieces", "powder",
+}
+# Prices that are placeholders on our side (loose staples added at Rs 1,000) prove nothing.
+PLACEHOLDER_PRICES = {Decimal("1000.00")}
 
 
 @dataclass(frozen=True)
@@ -79,3 +89,29 @@ def auto_pick(ours: Parsed, ranked: list[tuple[Candidate, Parsed]]) -> Candidate
     if rivals and best.score - rivals[0][0].score < AUTO_LEAD:
         return None
     return best
+
+
+def price_pick(ours: Parsed, our_name: str, our_price: Decimal | None,
+               ranked: list[tuple[Candidate, Parsed, Decimal | None]]) -> Candidate | None:
+    """A candidate that may be matched because name, size and price all agree:
+    every word of our name is in theirs (or the name scores 0.9+), the same known pack
+    size, no clashing pack kind, no word that changes the kind of product, and a price
+    within 5 % of ours. Among several, the one with the fewest extra words wins."""
+    if (our_price is None or our_price in PLACEHOLDER_PRICES
+            or any(ord(ch) > 127 for ch in our_name)):  # a Sinhala name hides words from us
+        return None
+    fits = []
+    for i, (c, theirs, price) in enumerate(ranked):
+        if price is None or same_size(ours, theirs) is not True:
+            continue
+        if ours.packs and theirs.packs and not ours.packs & theirs.packs:
+            continue
+        if abs(price - our_price) > our_price * PRICE_AGREEMENT:
+            continue
+        extra = theirs.words - ours.words
+        if extra & TYPE_WORDS - ours.words:
+            continue
+        if ours.words - theirs.words and c.score < 0.9:
+            continue
+        fits.append((len(extra), abs(price - our_price), -c.score, i))
+    return ranked[min(fits)[3]][0] if fits else None

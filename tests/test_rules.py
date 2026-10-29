@@ -246,3 +246,36 @@ def test_different_pack_kinds_are_never_automatic():
     assert matcher.auto_pick(ours, [(best, theirs)]) is None
     plain = parse("Lakspray Full Cream Milk Powder 400g")  # no pack named: fine
     assert matcher.auto_pick(plain, [(best, theirs)]) is best
+
+
+def _priced(name, price, score=0.8):
+    return (matcher.Candidate(name, score), parse(name), D(price))
+
+
+def test_price_agreement_confirms_a_fuller_title():
+    ours = parse("Iodex Balm 18g")
+    pick = matcher.price_pick(ours, "Iodex Balm 18g", D("375"),
+                              [_priced("IODEX QUICK PAIN RELIEF BALM 18G", "375")])
+    assert pick is not None and pick.key == "IODEX QUICK PAIN RELIEF BALM 18G"
+
+
+def test_price_agreement_never_crosses_a_product_kind_or_a_placeholder():
+    ours = parse("Maldive Fish 100g")
+    sambol = [_priced("Golden Food Product Maldive Fish Sambol 100G", "385")]
+    assert matcher.price_pick(ours, "Maldive Fish 100g", D("400"), sambol) is None
+    gram = [_priced("Star Gold Green Gram 1Kg", "980")]
+    assert matcher.price_pick(parse("Green Gram 1kg"), "Green Gram 1kg", D("1000"), gram) is None
+    far = [_priced("IODEX QUICK PAIN RELIEF BALM 18G", "450")]
+    assert matcher.price_pick(parse("Iodex Balm 18g"), "Iodex Balm 18g", D("375"), far) is None
+    sinhala = "Siddalepa Kekulu " + chr(0x0DAD) + " 70g"
+    soap = [_priced("Kekulu Soap Siddalepa 70g", "120")]
+    assert matcher.price_pick(parse(sinhala), sinhala, D("120"), soap) is None
+
+
+def test_price_agreement_prefers_the_closest_title():
+    ours = parse("Munchee Tifin 125g")
+    pick = matcher.price_pick(ours, "Munchee Tifin 125g", D("200"), [
+        _priced("Munchee Tifin Onion Biscuits 125g", "200"),
+        _priced("MUNCHEE Tifin, 125g", "200"),
+    ])
+    assert pick.key == "MUNCHEE Tifin, 125g"

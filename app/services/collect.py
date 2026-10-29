@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.adapters import build
 from app.adapters.base import ListedItem, PoliteClient, SourceBlocked, SourceFailed
 from app.models import (
+    BranchProduct,
     Competitor,
     CompetitorItem,
     PriceObservation,
@@ -117,6 +118,9 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
             created += result.rowcount or 0
             if sure and result.rowcount:
                 await _seed_history(db, sure.key)
+    # New candidates may already agree on price as well as name and size.
+    await db.flush()
+    promoted += await _promote_sure_candidates(db, competitor_id, {p.product_id for p in todo})
     return created + promoted
 
 
@@ -144,6 +148,10 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
     by_product: dict[uuid.UUID, list] = defaultdict(list)
     for m, prod in rows:
         by_product[prod.product_id].append((m, prod))
+    our_prices = dict((await db.execute(
+        select(BranchProduct.product_id, func.max(BranchProduct.selling_price))
+        .where(BranchProduct.product_id.in_(by_product), BranchProduct.is_active.is_(True))
+        .group_by(BranchProduct.product_id))).all()) if by_product else {}
     promoted = 0
     for pairs in by_product.values():
         prod = pairs[0][1]
@@ -151,7 +159,10 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
         ranked = [(matcher.Candidate(m, float(m.score)),
                    _with_size(parse(m.item.name), m.item.size_value, m.item.size_unit))
                   for m, _ in pairs]
-        sure = matcher.auto_pick(ours, ranked)
+        sure = matcher.auto_pick(ours, ranked) or matcher.price_pick(
+            ours, prod.name, our_prices.get(prod.product_id),
+            [(c, parsed, m.item.last_price)
+             for (c, parsed), (m, _) in zip(ranked, pairs, strict=True)])
         if sure is None:
             continue
         for m, _ in pairs:
