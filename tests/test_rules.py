@@ -48,11 +48,28 @@ def test_different_pack_size_is_never_a_candidate():
     assert matcher.score(ours, theirs) == 0.0
 
 
-def test_unknown_size_is_marked_down():
+def test_unknown_size_is_never_suggested():
+    # Owner (2026-10-29): brand, name and g / ml must all agree.
     ours = parse("Maliban Chocolate Cream Biscuit 400g")
-    sized = matcher.score(ours, parse("Maliban Chocolate Cream Biscuit 400g"))
-    unsized = matcher.score(ours, parse("Maliban Chocolate Cream Biscuit"))
-    assert 0 < unsized < sized
+    assert matcher.score(ours, parse("Maliban Chocolate Cream Biscuit 400g")) > 0.9
+    assert matcher.score(ours, parse("Maliban Chocolate Cream Biscuit")) == 0.0
+
+
+def test_another_brand_is_never_suggested():
+    ours = parse("Anchor Full Cream Milk Powder 400g")
+    assert matcher.score(ours, parse("Ratthi Full Cream Milk Powder 400g")) == 0.0
+    assert matcher.score(parse("Wijaya Chilli Powder 100g"),
+                         parse("SERA Chilli Powder, 100g")) == 0.0
+
+
+def test_brand_spelling_slips_still_count():
+    for ours, theirs in [("Morison Gripe Mixture 100ml", "MORISONS Gripe Mixture, 100ml"),
+                         ("Sun Crush Lemonade 500ml", "Suncrush Lemonade 500Ml"),
+                         ("Pelwatte Full Cream Milk Powder 400g",
+                          "Pelwette Full Cream Milk Powder 400g")]:
+        assert matcher.brand_ok(parse(ours), parse(theirs)), (ours, theirs)
+    assert not matcher.brand_ok(parse("Ceregrow Mixed Fruits 200g"),
+                                parse("Nestle Cerelac Mixed Fruits With Milk 200G"))
 
 
 def test_best_candidates_are_ranked_and_capped():

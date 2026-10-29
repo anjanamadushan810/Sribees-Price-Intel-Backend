@@ -9,6 +9,7 @@ import contextlib
 import logging
 import uuid
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
@@ -99,7 +100,8 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
     created = 0
     for p in todo:
         twin = by_barcode.get(p.barcode) if p.barcode else None
-        if twin is not None:
+        # An equal barcode under another brand is a data error on one side, not a match.
+        if twin is not None and matcher.brand_ok(parse(p.name), parse(twin.name)):
             result = await db.execute(insert(ProductMatch).values(
                 product_id=p.product_id, item_id=twin.item_id, competitor_id=competitor_id,
                 status="auto", method="barcode", score=1,
@@ -177,9 +179,9 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
 
 
 def _with_size(parsed: Parsed, size_value, size_unit) -> Parsed:
-    """The title's words and pack kind with the size we stored (it may come from a
-    separate pack field or Online's weight, not the title)."""
-    return Parsed(parsed.words, size_value, size_unit, parsed.packs)
+    """The title's words, brand and pack kind with the size we stored (it may come from
+    a separate pack field or Online's weight, not the title)."""
+    return replace(parsed, size_value=size_value, size_unit=size_unit)
 
 
 def search_query(name: str) -> str:

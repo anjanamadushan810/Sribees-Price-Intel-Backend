@@ -7,6 +7,7 @@ A different pack size is never a candidate: 400 g and 200 g are different produc
 
 from dataclasses import dataclass
 from decimal import Decimal
+from difflib import SequenceMatcher
 
 from app.services.normalize import Parsed
 
@@ -44,10 +45,30 @@ def same_size(a: Parsed, b: Parsed) -> bool | None:
     return abs(a.size_value - b.size_value) <= a.size_value * Decimal("0.02")
 
 
+def brand_ok(ours: Parsed, theirs: Parsed) -> bool:
+    """Owner (2026-10-29): never suggest a product without our brand in its title.
+    Spelling slips count as the brand ("Morison"/"Morisons", "Sun Crush"/"Suncrush",
+    "Pelwatte"/"Pelwette"); a different brand never does."""
+    b = ours.brand
+    if not b:
+        return False
+    if b in theirs.words or (len(b) >= 3 and b in theirs.text):
+        return True
+    for w in theirs.words:
+        if len(w) >= 4 and len(b) >= 4 and (w.startswith(b) or b.startswith(w)):
+            return True
+        if len(w) >= 5 and len(b) >= 5 and SequenceMatcher(None, b, w).ratio() >= 0.85:
+            return True
+    return False
+
+
 def score(ours: Parsed, theirs: Parsed) -> float:
     """0..1: how much of our product's name the competitor's title covers,
     blended with overall overlap, then adjusted for pack size."""
     if not ours.words or not theirs.words:
+        return 0.0
+    # Owner (2026-10-29): brand, name and pack size (g / ml) must all agree.
+    if not brand_ok(ours, theirs) or same_size(ours, theirs) is not True:
         return 0.0
     common = ours.words & theirs.words
     if not common:
@@ -55,11 +76,6 @@ def score(ours: Parsed, theirs: Parsed) -> float:
     coverage = len(common) / len(ours.words)
     jaccard = len(common) / len(ours.words | theirs.words)
     value = 0.7 * coverage + 0.3 * jaccard
-    size = same_size(ours, theirs)
-    if size is False:
-        return 0.0
-    if size is None:
-        value *= 0.8  # cannot tell the pack; a person must look harder
     return round(min(value, 1.0), 4)
 
 
@@ -78,7 +94,8 @@ def auto_pick(ours: Parsed, ranked: list[tuple[Candidate, Parsed]]) -> Candidate
     if not ranked:
         return None
     best, parsed = ranked[0]
-    if best.score < AUTO_SCORE or same_size(ours, parsed) is not True:
+    if (best.score < AUTO_SCORE or same_size(ours, parsed) is not True
+            or not brand_ok(ours, parsed)):
         return None
     # Both name what it comes in, and it differs (Box vs Pouch): a person decides.
     if ours.packs and parsed.packs and not ours.packs & parsed.packs:
@@ -102,7 +119,7 @@ def price_pick(ours: Parsed, our_name: str, our_price: Decimal | None,
         return None
     fits = []
     for i, (c, theirs, price) in enumerate(ranked):
-        if price is None or same_size(ours, theirs) is not True:
+        if price is None or same_size(ours, theirs) is not True or not brand_ok(ours, theirs):
             continue
         if ours.packs and theirs.packs and not ours.packs & theirs.packs:
             continue

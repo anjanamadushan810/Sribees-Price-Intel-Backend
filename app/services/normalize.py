@@ -58,6 +58,11 @@ class Parsed:
     size_value: Decimal | None
     size_unit: str | None
     packs: frozenset[str] = frozenset()
+    # The first word of the title: the brand on almost every shelf product
+    # ("Munchee", "Elephant", "Anchor"), and `text` the title with no spaces, to find
+    # a brand written as one word or two ("Sun Crush" / "Suncrush").
+    brand: str | None = None
+    text: str = ""
 
 
 def _ascii(text: str) -> str:
@@ -85,7 +90,9 @@ def parse(name: str, pack: str | None = None) -> Parsed:
     raw = _WORD.findall(text)
     words = frozenset(w for w in raw if w not in _STOP and not (w.isdigit() and len(w) < 3))
     packs = frozenset(_PACK_KINDS[w] for w in raw if w in _PACK_KINDS)
-    return Parsed(words=words, size_value=size_value, size_unit=size_unit, packs=packs)
+    brand = next((w for w in raw if not w.isdigit() and len(w) > 1), None)
+    return Parsed(words=words, size_value=size_value, size_unit=size_unit, packs=packs,
+                  brand=brand, text="".join(raw))
 
 
 def barcode_of(code: str | None) -> str | None:
