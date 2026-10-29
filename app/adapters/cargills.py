@@ -20,7 +20,8 @@ _READ_CARDS = """() => [...document.querySelectorAll('.cargillProdNeed')].map(c 
   pack: c.querySelector('.dropbtn1')?.textContent.trim() || '',
   prices: c.querySelector('.strike1 h4')?.textContent.trim() || '',
   href: c.querySelector('a[href*="/ProductDetails/"]')?.getAttribute('href') || '',
-  image: c.querySelector('img[src*="/VendorItems/"]')?.getAttribute('src') || '',
+  image: (c.querySelector('img[ng-src*="/VendorItems/"]')?.getAttribute('ng-src')
+          || c.querySelector('img[src*="/VendorItems/"]')?.getAttribute('src') || ''),
   out: c.innerText.toLowerCase().includes('out of stock'),
 }))"""
 
