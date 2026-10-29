@@ -49,6 +49,9 @@ _PACK_KINDS = {
     "bottle": "bottle", "btl": "bottle", "jar": "jar", "bag": "bag", "sachet": "sachet",
     "can": "can", "bib": "bag", "tube": "tube", "refill": "refill",
 }
+# Brands that start with an everyday word: the brand is the first two words
+# ("Baby Cheramy", not "Baby"; "Little Lion", "Sun Crush", "Mr Pop").
+_GENERIC_LEAD = {"baby", "little", "mr", "my", "sun", "the", "new", "lion", "red", "white"}
 _BARCODE = re.compile(r"^\d{8}$|^\d{12,14}$")
 
 
@@ -90,7 +93,10 @@ def parse(name: str, pack: str | None = None) -> Parsed:
     raw = _WORD.findall(text)
     words = frozenset(w for w in raw if w not in _STOP and not (w.isdigit() and len(w) < 3))
     packs = frozenset(_PACK_KINDS[w] for w in raw if w in _PACK_KINDS)
-    brand = next((w for w in raw if not w.isdigit() and len(w) > 1), None)
+    named = [w for w in raw if not w.isdigit() and len(w) > 1]
+    brand = named[0] if named else None
+    if brand in _GENERIC_LEAD and len(named) > 1:
+        brand = named[0] + named[1]
     return Parsed(words=words, size_value=size_value, size_unit=size_unit, packs=packs,
                   brand=brand, text="".join(raw))
 

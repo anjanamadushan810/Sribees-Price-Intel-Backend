@@ -296,3 +296,20 @@ def test_price_agreement_prefers_the_closest_title():
         _priced("MUNCHEE Tifin, 125g", "200"),
     ])
     assert pick.key == "MUNCHEE Tifin, 125g"
+
+
+def test_typing_slips_in_words_still_match():
+    for ours, theirs in [("Motha Watalappan Pudding Mix 110g",
+                          "Motha Wattalappan Pudding Mix 110g"),
+                         ("Munchee Hawaian Cookies 100g", "Munchee Hawaiian Cookies 100G"),
+                         ("Munchee Snak Cracker 30g", "Munchee Snack Cracker, 30G")]:
+        assert matcher.score(parse(ours), parse(theirs)) >= 0.95, (ours, theirs)
+    assert matcher.score(parse("Wijaya Pepper Powder 50g"),
+                         parse("Wijaya Mustard Powder 50g")) < 0.8
+
+
+def test_a_brand_that_starts_with_an_everyday_word():
+    ours = parse("Baby Cheramy Floral Baby Cream 100ml")
+    assert ours.brand == "babycheramy"
+    assert not matcher.brand_ok(ours, parse("Pears Baby Cream Active Floral 100ml"))
+    assert matcher.brand_ok(ours, parse("BABY CHERAMY Cream Floral, 100ml"))

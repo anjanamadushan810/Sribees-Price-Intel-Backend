@@ -45,6 +45,24 @@ def same_size(a: Parsed, b: Parsed) -> bool | None:
     return abs(a.size_value - b.size_value) <= a.size_value * Decimal("0.02")
 
 
+def same_word(a: str, b: str) -> bool:
+    """One word, allowing a plural or a typing slip ("Hawaian" / "Hawaiian",
+    "Snak" / "Snack", "Nut" / "Nuts"); short words must be exact."""
+    if a == b or a + "s" == b or b + "s" == a:
+        return True
+    if len(a) < 4 or len(b) < 4:
+        return False
+    if a.startswith(b) or b.startswith(a):
+        return True
+    # A slip changes a letter or two, never a whole syllable ("salted" / "unsalted").
+    return abs(len(a) - len(b)) <= 1 and SequenceMatcher(None, a, b).ratio() >= 0.84
+
+
+def missing_words(ours: Parsed, theirs: Parsed) -> set[str]:
+    """Our words with no counterpart in their title."""
+    return {w for w in ours.words if not any(same_word(w, t) for t in theirs.words)}
+
+
 def brand_ok(ours: Parsed, theirs: Parsed) -> bool:
     """Owner (2026-10-29): never suggest a product without our brand in its title.
     Spelling slips count as the brand ("Morison"/"Morisons", "Sun Crush"/"Suncrush",
@@ -54,6 +72,8 @@ def brand_ok(ours: Parsed, theirs: Parsed) -> bool:
         return False
     if b in theirs.words or (len(b) >= 3 and b in theirs.text):
         return True
+    if b not in ours.words:  # a two-word brand ("babycheramy"): only whole, in order
+        return False
     for w in theirs.words:
         if len(w) >= 4 and len(b) >= 4 and (w.startswith(b) or b.startswith(w)):
             return True
@@ -70,11 +90,11 @@ def score(ours: Parsed, theirs: Parsed) -> float:
     # Owner (2026-10-29): brand, name and pack size (g / ml) must all agree.
     if not brand_ok(ours, theirs) or same_size(ours, theirs) is not True:
         return 0.0
-    common = ours.words & theirs.words
-    if not common:
+    matched = len(ours.words) - len(missing_words(ours, theirs))
+    if not matched:
         return 0.0
-    coverage = len(common) / len(ours.words)
-    jaccard = len(common) / len(ours.words | theirs.words)
+    coverage = matched / len(ours.words)
+    jaccard = matched / (len(ours.words) + len(theirs.words) - matched)
     value = 0.7 * coverage + 0.3 * jaccard
     return round(min(value, 1.0), 4)
 
@@ -102,7 +122,8 @@ def auto_pick(ours: Parsed, ranked: list[tuple[Candidate, Parsed]]) -> Candidate
         return None
     # A shop listing the same product twice (same words, same size) is not a rival.
     rivals = [(c, p) for c, p in ranked[1:]
-              if not (p.words == parsed.words and same_size(p, parsed) is True)]
+              if not (not missing_words(p, parsed) and not missing_words(parsed, p)
+                      and same_size(p, parsed) is True)]
     if rivals and best.score - rivals[0][0].score < AUTO_LEAD:
         return None
     return best
@@ -128,7 +149,7 @@ def price_pick(ours: Parsed, our_name: str, our_price: Decimal | None,
         extra = theirs.words - ours.words
         if extra & TYPE_WORDS - ours.words:
             continue
-        if ours.words - theirs.words and c.score < 0.9:
+        if missing_words(ours, theirs) and c.score < 0.9:
             continue
         fits.append((len(extra), abs(price - our_price), -c.score, i))
     return ranked[min(fits)[3]][0] if fits else None
