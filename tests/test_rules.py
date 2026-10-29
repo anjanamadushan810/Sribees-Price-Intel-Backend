@@ -319,3 +319,19 @@ def test_a_word_fragment_is_not_the_brand():
     assert not matcher.brand_ok(parse("Bakerdream Yeast 500g"),
                                 parse("Masterline Best 2 Bake High Sugar Instant Dry Yeast 500G"))
     assert matcher.brand_ok(parse("Mentos Marbels 7.7g"), parse("Mento Marbles Sour 7.7G"))
+
+
+def test_sizes_joined_by_plus_add_up():
+    assert parse_size("Coca Cola 2L + 250Ml") == (D("2250.000"), "ml")
+    assert parse_size("Fanta 1050Ml + 200Ml") == (D("1250.000"), "ml")
+    assert parse_size("Baby Cheramy Cream 100Ml + Cream 50Ml") == (D("50.000"), "ml")
+
+
+def test_price_sanity_trusts_shops_that_agree_with_each_other():
+    from app.services.collect import price_sane
+
+    assert price_sane(D("100"), D("150"), [])                     # within half / double
+    assert not price_sane(D("50"), D("600"), [])                   # 2 pads vs 20 pads
+    assert price_sane(D("390"), D("990"), [D("990"), D("990")])    # our Baygon price is off
+    assert not price_sane(D("60"), D("1190"), [D("65")])           # one shop is the odd one
+    assert price_sane(D("1000"), D("200"), [])                     # our placeholder

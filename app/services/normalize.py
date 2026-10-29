@@ -72,16 +72,27 @@ def _ascii(text: str) -> str:
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
 
 
-def parse_size(text: str) -> tuple[Decimal | None, str | None]:
-    """The last size in the title wins ("Tin 245G" beats a "2 in 1" earlier on)."""
-    found = None
-    for m in _SIZE.finditer(text or ""):
-        found = m
-    if found is None:
-        return None, None
-    count, amount, unit = found.groups()
+def _one_size(m: re.Match) -> tuple[Decimal, str]:
+    count, amount, unit = m.groups()
     base, factor = _UNITS[unit.lower()]
-    value = Decimal(amount) * factor * (int(count) if count else 1)
+    return Decimal(amount) * factor * (int(count) if count else 1), base
+
+
+def parse_size(text: str) -> tuple[Decimal | None, str | None]:
+    """The last size in the title wins ("Tin 245G" beats a "2 in 1" earlier on), and
+    sizes joined by "+" add up ("2L + 250Ml" is 2.25 l, the same bottle as "2.25l")."""
+    text = text or ""
+    found = list(_SIZE.finditer(text))
+    if not found:
+        return None, None
+    value, base = _one_size(found[-1])
+    i = len(found) - 1
+    while i > 0 and text[found[i - 1].end():found[i].start()].strip() == "+":
+        more, unit = _one_size(found[i - 1])
+        if unit != base:
+            break
+        value += more
+        i -= 1
     if value <= 0:
         return None, None
     return value.quantize(Decimal("0.001")), base

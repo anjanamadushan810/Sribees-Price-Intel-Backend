@@ -11,6 +11,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -100,8 +101,8 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
     created = 0
     for p in todo:
         twin = by_barcode.get(p.barcode) if p.barcode else None
-        # An equal barcode under another brand is a data error on one side, not a match.
-        if twin is not None and matcher.brand_ok(parse(p.name), parse(twin.name)):
+        # Owner (2026-10-29): the pack's own barcode is trusted as it is; no other check.
+        if twin is not None:
             result = await db.execute(insert(ProductMatch).values(
                 product_id=p.product_id, item_id=twin.item_id, competitor_id=competitor_id,
                 status="auto", method="barcode", score=1,
@@ -123,7 +124,75 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
     # New candidates may already agree on price as well as name and size.
     await db.flush()
     promoted += await _promote_sure_candidates(db, competitor_id, {p.product_id for p in todo})
+    await price_sanity(db, competitor_id)
     return created + promoted
+
+
+# A matched price beyond half / double ours is a different product (2 pads vs 20, 75 g
+# vs a tin) -- unless other shops charge the same, in which case it is our price that is
+# wrong (a placeholder, a typo) and the match is right.
+SANE_LOW, SANE_HIGH = Decimal("0.5"), Decimal("2")
+PEER_AGREEMENT = Decimal("0.15")
+
+
+def price_sane(ours: Decimal | None, theirs: Decimal | None, peers: list[Decimal]) -> bool:
+    if ours is None or theirs is None or ours in matcher.PLACEHOLDER_PRICES:
+        return True
+    if SANE_LOW <= theirs / ours <= SANE_HIGH:
+        return True
+    if peers:
+        middle = sorted(peers)[len(peers) // 2]
+        return abs(theirs - middle) <= middle * PEER_AGREEMENT
+    return False
+
+
+async def _price_context(db: AsyncSession, product_ids) -> tuple[dict, dict]:
+    """Our price per product (highest branch selling price) and every live match's
+    shop price per product, as {product_id: [(match_id, price)]}."""
+    ids = list(product_ids)
+    if not ids:
+        return {}, {}
+    ours = dict((await db.execute(
+        select(BranchProduct.product_id, func.max(BranchProduct.selling_price))
+        .where(BranchProduct.product_id.in_(ids), BranchProduct.is_active.is_(True))
+        .group_by(BranchProduct.product_id))).all())
+    peers: dict = defaultdict(list)
+    for pid, mid, price in (await db.execute(
+            select(ProductMatch.product_id, ProductMatch.match_id, CompetitorItem.last_price)
+            .join(CompetitorItem, CompetitorItem.item_id == ProductMatch.item_id)
+            .where(ProductMatch.product_id.in_(ids), ProductMatch.status.in_(LIVE),
+                   CompetitorItem.last_price.is_not(None)))).all():
+        peers[pid].append((mid, price))
+    return ours, peers
+
+
+async def price_sanity(db: AsyncSession, competitor_id: int | None = None) -> dict:
+    """Re-judge automatic NAME matches (never a person's, never a barcode's -- owner
+    2026-10-29: barcode matches are trusted): a price out of line with ours and with the
+    other shops goes back to the queue (or away, when it no longer passes brand and size)."""
+    q = (select(ProductMatch, Product)
+         .join(Product, Product.product_id == ProductMatch.product_id)
+         .where(ProductMatch.status == "auto", ProductMatch.method == "name"))
+    if competitor_id is not None:
+        q = q.where(ProductMatch.competitor_id == competitor_id)
+    rows = (await db.execute(q)).all()
+    ours_by_product, peers = await _price_context(db, {p.product_id for _, p in rows})
+    counts = {"to_queue": 0, "removed": 0}
+    for m, p in rows:
+        ours = _with_size(parse(p.name), p.size_value, p.size_unit)
+        theirs = _with_size(parse(m.item.name), m.item.size_value, m.item.size_unit)
+        others = [price for mid, price in peers.get(p.product_id, []) if mid != m.match_id]
+        if price_sane(ours_by_product.get(p.product_id), m.item.last_price, others):
+            continue
+        if matcher.brand_ok(ours, theirs) and matcher.same_size(ours, theirs) is True:
+            m.status, m.method = "candidate", "name"
+            m.score = matcher.score(ours, theirs)
+            counts["to_queue"] += 1
+        else:
+            await db.delete(m)
+            counts["removed"] += 1
+    await db.flush()
+    return counts
 
 
 async def _seed_history(db: AsyncSession, item_id: uuid.UUID) -> None:
@@ -150,10 +219,7 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
     by_product: dict[uuid.UUID, list] = defaultdict(list)
     for m, prod in rows:
         by_product[prod.product_id].append((m, prod))
-    our_prices = dict((await db.execute(
-        select(BranchProduct.product_id, func.max(BranchProduct.selling_price))
-        .where(BranchProduct.product_id.in_(by_product), BranchProduct.is_active.is_(True))
-        .group_by(BranchProduct.product_id))).all()) if by_product else {}
+    our_prices, shop_prices = await _price_context(db, by_product)
     promoted = 0
     for pairs in by_product.values():
         prod = pairs[0][1]
@@ -165,7 +231,9 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
             ours, prod.name, our_prices.get(prod.product_id),
             [(c, parsed, m.item.last_price)
              for (c, parsed), (m, _) in zip(ranked, pairs, strict=True)])
-        if sure is None:
+        if sure is None or not price_sane(
+                our_prices.get(prod.product_id), sure.key.item.last_price,
+                [price for _, price in shop_prices.get(prod.product_id, [])]):
             continue
         for m, _ in pairs:
             if m is sure.key:
