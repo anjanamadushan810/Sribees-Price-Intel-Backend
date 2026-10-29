@@ -160,6 +160,7 @@ class ItemOut(ORM):
     size_value: Decimal | None
     size_unit: str | None
     url: str | None
+    image_url: str | None = None
     last_price: Money | None
     last_mrp: Money | None
     in_stock: bool
@@ -216,6 +217,7 @@ class MatchQueueItem(BaseModel):
     score: Decimal
     item: ItemOut
     our_price: Money | None = None  # what we sell it for, to see a price that cannot be it
+    product_image: str | None = None  # our photo, beside theirs
 
 
 class MatchQueuePage(BaseModel):

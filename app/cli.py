@@ -5,6 +5,7 @@
     python -m app.cli daily --no-sync --competitor 1
     python -m app.cli suggest                  # only recompute suggestions
     python -m app.cli scheduler                # the worker: daily run at 05:00 Colombo time
+    python -m app.cli refresh-queue            # re-read the match queue's shop items now
 
 The super admin's password is read from the terminal, never from the command line.
 """
@@ -50,6 +51,22 @@ async def suggest_only() -> None:
         print(json.dumps(await suggest.refresh(db)))
 
 
+async def refresh_queue(competitor_ids: list[int] | None) -> None:
+    """Re-read the shop items waiting in the match queue (photos and prices)."""
+    from app.models import Competitor
+    from app.services import collect
+
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as db:
+        ids = competitor_ids or list(await db.scalars(select(Competitor.competitor_id).where(
+            Competitor.kind == "scraped", Competitor.is_enabled.is_(True))))
+    for cid in ids:
+        try:
+            print(cid, await collect.refresh_queue(sessionmaker, cid))
+        except Exception as exc:  # noqa: BLE001 -- one shop's trouble must not stop the rest
+            print(cid, "failed:", exc.__class__.__name__, exc)
+
+
 COLOMBO = ZoneInfo("Asia/Colombo")
 RUN_AT_HOUR = 5  # before the shops open; Online's prices are read fresh first
 
@@ -86,6 +103,8 @@ def main() -> None:
     daily.add_argument("--competitor", type=int, action="append")
     sub.add_parser("suggest")
     sub.add_parser("scheduler")
+    refresh = sub.add_parser("refresh-queue")
+    refresh.add_argument("--competitor", type=int, action="append")
     args = parser.parse_args()
 
     if args.command == "create-admin":
@@ -96,6 +115,8 @@ def main() -> None:
         print(json.dumps(report, default=str))
     elif args.command == "scheduler":
         asyncio.run(scheduler())
+    elif args.command == "refresh-queue":
+        asyncio.run(refresh_queue(args.competitor))
     else:
         asyncio.run(suggest_only())
 

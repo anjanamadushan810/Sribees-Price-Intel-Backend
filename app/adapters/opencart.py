@@ -5,7 +5,7 @@ import re
 
 from selectolax.parser import HTMLParser
 
-from app.adapters.base import Adapter, ListedItem, money
+from app.adapters.base import Adapter, ListedItem, absolute, money
 
 _PRODUCT_ID = re.compile(r"product_id=(\d+)")
 
@@ -25,6 +25,7 @@ def parse_search(html: str) -> list[ListedItem]:
         if not found or price is None:
             continue
         out_of_stock = card.css_first(".out-of-stock") is not None
+        img = card.css_first(".image img")
         items.append(ListedItem(
             external_id=found.group(1),
             name=link.text(strip=True),
@@ -32,6 +33,8 @@ def parse_search(html: str) -> list[ListedItem]:
             mrp=money(old.text()) if old else None,
             url=re.sub(r"&search=[^&]*", "", href.replace("&amp;", "&")),
             in_stock=not out_of_stock,
+            image=absolute(href.split("/index.php")[0],
+                           img.attributes.get("src") if img else None),
         ))
     return items
 

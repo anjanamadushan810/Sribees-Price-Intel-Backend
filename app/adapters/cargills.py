@@ -8,7 +8,7 @@ A card gives name, pack size ("400.00 g"), price and MRP ("Rs. 570.00 MRP: Rs. 6
 import re
 from urllib.parse import quote, urlsplit
 
-from app.adapters.base import Adapter, ListedItem, money
+from app.adapters.base import Adapter, ListedItem, absolute, money
 from app.adapters.browser import Renderer
 
 CARD = ".cargillProdNeed"
@@ -20,6 +20,7 @@ _READ_CARDS = """() => [...document.querySelectorAll('.cargillProdNeed')].map(c 
   pack: c.querySelector('.dropbtn1')?.textContent.trim() || '',
   prices: c.querySelector('.strike1 h4')?.textContent.trim() || '',
   href: c.querySelector('a[href*="/ProductDetails/"]')?.getAttribute('href') || '',
+  image: c.querySelector('img[src*="/VendorItems/"]')?.getAttribute('src') || '',
   out: c.innerText.toLowerCase().includes('out of stock'),
 }))"""
 
@@ -40,6 +41,7 @@ def parse_card(card: dict, base_url: str) -> ListedItem | None:
         pack=(card.get("pack") or None),
         url=f"{base_url}{href}" if href.startswith("/") else href,
         in_stock=not card.get("out"),
+        image=absolute(base_url, card.get("image")),
     )
 
 

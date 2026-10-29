@@ -8,7 +8,7 @@ import html
 from collections.abc import AsyncIterator
 from decimal import Decimal
 
-from app.adapters.base import Adapter, ListedItem, SourceFailed
+from app.adapters.base import Adapter, ListedItem, SourceFailed, absolute
 from app.core.config import get_settings
 
 PAGE_SIZE = 100
@@ -43,6 +43,8 @@ def parse_page(data: list, base_url: str) -> list[ListedItem]:
             barcode=(str(product.get("sku") or "").strip() or None),
             url=product.get("permalink") or base_url,
             in_stock=bool(product.get("is_in_stock", True)),
+            image=absolute(base_url,
+                           ((product.get("images") or [{}])[0] or {}).get("thumbnail")),
         ))
     return items
 

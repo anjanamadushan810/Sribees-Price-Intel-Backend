@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     online_api_url: str = ""
     online_admin_email: str = ""
     online_admin_password: str = ""
+    # Where browsers fetch Online's product photos when Online gives a relative path
+    # (/uploads/...). Defaults to ONLINE_API_URL, which is public in production.
+    online_media_base: str = ""
 
     # Polite scraping (docs/PHASE0_FINDINGS.md).
     scrape_user_agent: str = "SribeesPriceBot/0.1 (+https://sribeesonline.com)"

@@ -50,6 +50,8 @@ async def _store(db: AsyncSession, competitor_id: int, items: list[ListedItem],
             "size_unit": parsed.size_unit, "last_price": it.price, "last_mrp": it.mrp,
             "in_stock": it.in_stock, "last_seen_at": now,
         }
+        if it.image:
+            values["image_url"] = it.image
         item_id = await db.scalar(
             insert(CompetitorItem)
             .values(competitor_id=competitor_id, external_id=it.external_id[:120], **values)
@@ -409,3 +411,50 @@ async def _run_sitemap(sessionmaker, competitor_id: int, adapter) -> int:
                 else:
                     await _store(db, competitor_id, [found], datetime.now(UTC))
     return len(listed)
+
+
+async def refresh_queue(sessionmaker: async_sessionmaker, competitor_id: int,
+                        transport=None) -> int:
+    """Re-read, now, the shop items waiting in the match queue at this shop -- search
+    shops look up the waiting products again, sitemap shops read the waiting items'
+    pages -- so a person deciding sees today's photo and price. Same politeness rules."""
+    async with sessionmaker() as db:
+        competitor = await db.get(Competitor, competitor_id)
+        waiting = (await db.execute(
+            select(ProductMatch.product_id, CompetitorItem)
+            .join(CompetitorItem, CompetitorItem.item_id == ProductMatch.item_id)
+            .where(ProductMatch.competitor_id == competitor_id,
+                   ProductMatch.status == "candidate"))).all()
+        products = {pid: await db.get(Product, pid) for pid, _ in waiting}
+    if not waiting or competitor is None or competitor.kind != "scraped":
+        return 0
+    now, seen = datetime.now(UTC), 0
+    async with PoliteClient(competitor.base_url, transport=transport) as client:
+        adapter = build(competitor.adapter or "", client)
+        if adapter is None:
+            return 0
+        async with adapter:
+            if adapter.mode == "search":
+                for product in products.values():
+                    try:
+                        items = await adapter.search(search_query(product.name))
+                    except SourceFailed:
+                        continue
+                    async with sessionmaker() as db, db.begin():
+                        await _store(db, competitor_id, items, now)
+                    seen += len(items)
+            elif adapter.mode == "sitemap":
+                from app.adapters.browser import Renderer
+                from app.adapters.keells import Listed
+
+                async with contextlib.AsyncExitStack() as stack:
+                    renderer = (await stack.enter_async_context(Renderer(adapter.min_delay))
+                                if adapter.needs_browser else None)
+                    for _, item in waiting:
+                        found = await adapter.price(
+                            renderer, Listed(item.external_id, item.name, item.url))
+                        if found is not None:
+                            async with sessionmaker() as db, db.begin():
+                                await _store(db, competitor_id, [found], datetime.now(UTC))
+                            seen += 1
+    return seen

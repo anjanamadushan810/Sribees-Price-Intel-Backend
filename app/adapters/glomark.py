@@ -9,7 +9,7 @@ import json
 import re
 from urllib.parse import unquote, urlsplit
 
-from app.adapters.base import Adapter, ListedItem, SourceFailed, money
+from app.adapters.base import Adapter, ListedItem, SourceFailed, absolute, money
 from app.adapters.keells import Listed
 
 _LOC = re.compile(r"<loc>\s*([^<]+?)\s*</loc>")
@@ -59,6 +59,7 @@ def parse_product(page: str, item: Listed) -> ListedItem | None:
             brand=html.unescape(brand) if brand else None,
             url=item.url,
             in_stock="instock" in str(offer.get("availability", "")).lower(),
+            image=absolute(item.url, data["image"] if isinstance(data.get("image"), str) else None),
         )
     return None
 

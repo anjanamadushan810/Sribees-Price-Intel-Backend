@@ -290,7 +290,7 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
                 match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
                 product_size=size, competitor_id=m.competitor_id, competitor=cname,
                 score=m.score, item=ItemOut.model_validate(m.item),
-                our_price=our_prices.get(prod.product_id)))
+                our_price=our_prices.get(prod.product_id), product_image=prod.image_url))
     return MatchQueuePage(items=out, total=total, page=page, pages=max(1, -(-total // limit)),
                           no_price_yet=no_price_yet)
 

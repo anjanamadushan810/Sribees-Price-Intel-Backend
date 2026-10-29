@@ -5,7 +5,7 @@ variant price is the shop's price."""
 
 from collections.abc import AsyncIterator
 
-from app.adapters.base import Adapter, ListedItem, SourceFailed, money
+from app.adapters.base import Adapter, ListedItem, SourceFailed, absolute, money
 from app.core.config import get_settings
 
 PAGE_SIZE = 250
@@ -31,6 +31,7 @@ def parse_page(data: dict, base_url: str) -> list[ListedItem]:
             barcode=(variant.get("barcode") or None),
             url=f"{base_url}/products/{product.get('handle')}",
             in_stock=bool(available),
+            image=absolute(base_url, ((product.get("images") or [{}])[0] or {}).get("src")),
         ))
     return items
 

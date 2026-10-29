@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 
-from app.adapters.base import Adapter, ListedItem, SourceFailed, money
+from app.adapters.base import Adapter, ListedItem, SourceFailed, absolute, money
 from app.core.config import get_settings
 
 PAGE_SIZE = 60
@@ -25,6 +25,7 @@ def parse_page(data: dict, base_url: str) -> list[ListedItem]:
             pack=(row.get("pack") or "").strip() or None,
             url=base_url,  # Nexmart has no per-product page
             in_stock=bool(row.get("inStock", True)),
+            image=absolute(base_url, row.get("image")),
         ))
     return items
 

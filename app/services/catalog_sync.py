@@ -12,6 +12,8 @@ from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.base import absolute
+from app.core.config import get_settings
 from app.models import Branch, BranchProduct, Product
 from app.services.normalize import barcode_of, parse_size
 from app.services.online_client import OnlineClient
@@ -48,6 +50,15 @@ def product_size(name: str, weight, weight_unit: str | None) -> tuple[Decimal | 
     return None, None
 
 
+def _photo(images) -> str | None:
+    """The primary photo (else the first), as an absolute URL a browser can load."""
+    if not images:
+        return None
+    best = next((i for i in images if i.get("is_primary")), images[0])
+    settings = get_settings()
+    return absolute(settings.online_media_base or settings.online_api_url, best.get("image_url"))
+
+
 async def sync(db: AsyncSession, online: OnlineClient) -> dict:
     now = datetime.now(UTC)
     counts = {"branches": 0, "products": 0, "branch_products": 0}
@@ -70,6 +81,7 @@ async def sync(db: AsyncSession, online: OnlineClient) -> dict:
         category = (p.get("category") or {}).get("name") if isinstance(p.get("category"), dict) \
             else None
         values = {
+            "image_url": _photo(p.get("images")),
             "name": p["name"][:255], "name_si": (p.get("name_si") or None),
             "sku": p.get("sku"), "barcode": barcode_of(p.get("sku")), "category": category,
             "size_value": size_value, "size_unit": size_unit, "review_level": level,

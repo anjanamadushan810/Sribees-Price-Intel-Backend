@@ -275,3 +275,26 @@ async def test_robots_timeout_is_a_failure_and_never_allows_everything():
         finally:
             base.asyncio.sleep = client_sleep
     assert "/page" not in calls
+
+
+def test_every_shop_gives_a_photo_address():
+    from app.adapters import nexmart, opencart, ranjan, shopify, woocommerce
+    from app.adapters.base import absolute
+
+    assert absolute("https://ranjanlanka.lk", "../src/item/1.png") == \
+        "https://ranjanlanka.lk/src/item/1.png"
+    assert absolute("https://s", "//cdn.shopify.com/x.jpg") == "https://cdn.shopify.com/x.jpg"
+    pages = [
+        nexmart.parse_page(json.loads((FIX / "nexmart_page.json").read_text("utf-8")),
+                           "https://www.nexmart.lk"),
+        shopify.parse_page(json.loads((FIX / "spar_page.json").read_text("utf-8")),
+                           "https://spar2u.lk"),
+        woocommerce.parse_page(json.loads((FIX / "woocommerce_page.json").read_text("utf-8")),
+                               "https://onlinekade.lk"),
+        opencart.parse_search((FIX / "arpico_search.html").read_text("utf-8")),
+        ranjan.parse_search((FIX / "ranjan_search.html").read_text("utf-8"),
+                            "https://ranjanlanka.lk"),
+    ]
+    for items in pages:
+        photos = [i.image for i in items if i.image]
+        assert photos and all(p.startswith("https://") for p in photos), items[0]

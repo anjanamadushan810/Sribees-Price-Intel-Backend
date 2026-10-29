@@ -127,6 +127,7 @@ class Product(Base):
     size_unit: Mapped[str | None] = mapped_column(String(4))
     review_level: Mapped[str] = mapped_column(String(10), default="long")
     mrp: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    image_url: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -189,6 +190,7 @@ class CompetitorItem(Base):
     size_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     size_unit: Mapped[str | None] = mapped_column(String(4))
     url: Mapped[str | None] = mapped_column(String(500))
+    image_url: Mapped[str | None] = mapped_column(String(500))
     last_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     last_mrp: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     in_stock: Mapped[bool] = mapped_column(Boolean, default=True)

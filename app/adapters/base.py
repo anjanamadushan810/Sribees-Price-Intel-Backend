@@ -37,6 +37,22 @@ class ListedItem:
     barcode: str | None = None
     url: str | None = None
     in_stock: bool = True
+    image: str | None = None  # absolute URL of the shop's product photo
+
+
+def absolute(base_url: str, src: str | None) -> str | None:
+    """A photo address as the browser needs it: '//cdn/x', '/uploads/x' and
+    '../src/x' all become https URLs on the shop's own site."""
+    if not src:
+        return None
+    src = src.strip()
+    if src.startswith(("http://", "https://")):
+        return src[:500]
+    if src.startswith("//"):
+        return f"https:{src}"[:500]
+    while src.startswith("../"):
+        src = src[3:]
+    return f"{base_url.rstrip('/')}/{src.lstrip('/')}"[:500]
 
 
 def money(value) -> Decimal | None:
