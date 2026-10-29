@@ -313,3 +313,9 @@ def test_a_brand_that_starts_with_an_everyday_word():
     assert ours.brand == "babycheramy"
     assert not matcher.brand_ok(ours, parse("Pears Baby Cream Active Floral 100ml"))
     assert matcher.brand_ok(ours, parse("BABY CHERAMY Cream Floral, 100ml"))
+
+
+def test_a_word_fragment_is_not_the_brand():
+    assert not matcher.brand_ok(parse("Bakerdream Yeast 500g"),
+                                parse("Masterline Best 2 Bake High Sugar Instant Dry Yeast 500G"))
+    assert matcher.brand_ok(parse("Mentos Marbels 7.7g"), parse("Mento Marbles Sour 7.7G"))

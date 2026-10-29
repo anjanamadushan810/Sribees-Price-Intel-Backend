@@ -75,7 +75,10 @@ def brand_ok(ours: Parsed, theirs: Parsed) -> bool:
     if b not in ours.words:  # a two-word brand ("babycheramy"): only whole, in order
         return False
     for w in theirs.words:
-        if len(w) >= 4 and len(b) >= 4 and (w.startswith(b) or b.startswith(w)):
+        # A plural or an extra letter ("Morison" / "Morisons", "Mentos" / "Mento"),
+        # never a fragment ("Bake" is not "Bakerdream").
+        if (len(w) >= 4 and len(b) >= 4 and abs(len(w) - len(b)) <= 2
+                and (w.startswith(b) or b.startswith(w))):
             return True
         if len(w) >= 5 and len(b) >= 5 and SequenceMatcher(None, b, w).ratio() >= 0.85:
             return True
