@@ -85,16 +85,27 @@ class PoliteClient:
 
     async def _allowed(self, path: str) -> bool:
         if self._robots is None:
-            self._robots = RobotFileParser()
-            await self._pace()
-            self.requests += 1
-            resp = await self._client.get("/robots.txt")
+            resp = None
+            for attempt in range(3):
+                await self._pace()
+                self.requests += 1
+                try:
+                    resp = await self._client.get("/robots.txt")
+                    break
+                except httpx.TransportError as exc:
+                    if attempt == 2:
+                        raise SourceFailed(
+                            f"robots.txt unreachable: {exc.__class__.__name__}") from exc
+                    await asyncio.sleep(5 * (attempt + 1))
+            robots = RobotFileParser()
             if resp.status_code == 200 and not _looks_challenged(resp.text):
-                self._robots.parse(resp.text.splitlines())
+                robots.parse(resp.text.splitlines())
             elif resp.status_code in (401, 403) or _looks_challenged(resp.text):
                 raise SourceBlocked("robots.txt is behind a block or a bot challenge")
             else:
-                self._robots.parse([])  # no robots.txt: nothing is disallowed
+                robots.parse([])  # no robots.txt: nothing is disallowed
+            # Kept only once read: a failed read must never leave "allow everything" behind.
+            self._robots = robots
         return self._robots.can_fetch(self.user_agent, f"{self.base_url}{path}")
 
     async def allowed(self, path: str) -> bool:

@@ -249,3 +249,29 @@ async def test_post_obeys_the_same_rules():
     async with _client(handler) as client:
         with pytest.raises(SourceBlocked):
             await client.post("/shop/", files={"search": (None, "milk")})
+
+
+async def test_robots_timeout_is_a_failure_and_never_allows_everything():
+    calls = []
+
+    def handler(request: httpx.Request):
+        calls.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            raise httpx.ReadTimeout("slow")
+        return httpx.Response(200, text="ok")
+
+    async with _client(handler) as client:
+        client_sleep = base.asyncio.sleep
+
+        async def no_wait(_):
+            return None
+
+        base.asyncio.sleep = no_wait
+        try:
+            with pytest.raises(SourceFailed):
+                await client.get("/page")
+            with pytest.raises(SourceFailed):  # still not allowed on the next call
+                await client.get("/page")
+        finally:
+            base.asyncio.sleep = client_sleep
+    assert "/page" not in calls
