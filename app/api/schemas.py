@@ -220,6 +220,7 @@ class MatchQueueItem(BaseModel):
 class MatchQueuePage(BaseModel):
     items: list[MatchQueueItem]
     total: int  # (product, shop) pairs waiting
+    no_price_yet: int = 0  # products in the queue matched at no shop at all
     page: int
     pages: int
 

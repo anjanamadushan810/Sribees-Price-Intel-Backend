@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.deps import Principal, client_ip, require
 from app.api.schemas import (
@@ -227,9 +228,15 @@ async def product_history(product_id: uuid.UUID, days: int = Query(default=90, l
 
 # ---------------------------------------------------------------- match queue
 def _queue_groups(competitor_id: int | None):
-    """One row per (product, shop) still waiting, best first."""
+    """One row per (product, shop) still waiting. Products matched at no shop yet come
+    first (they are the ones with no comparison at all), surest first within each."""
     best = func.max(ProductMatch.score).label("best")
-    q = (select(ProductMatch.product_id, ProductMatch.competitor_id, best)
+    live = aliased(ProductMatch)
+    matched_elsewhere = (select(live.match_id).where(
+        live.product_id == ProductMatch.product_id, live.status.in_(LIVE))
+        .correlate_except(live).exists())
+    unmatched = func.bool_and(~matched_elsewhere).label("unmatched")
+    q = (select(ProductMatch.product_id, ProductMatch.competitor_id, best, unmatched)
          .join(Product, Product.product_id == ProductMatch.product_id)
          .where(ProductMatch.status == "candidate", Product.is_active.is_(True))
          .group_by(ProductMatch.product_id, ProductMatch.competitor_id))
@@ -254,9 +261,12 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
     surest first so one confirmation clears the most likely pair."""
     groups = _queue_groups(competitor_id).subquery()
     total = await db.scalar(select(func.count()).select_from(groups))
+    no_price_yet = await db.scalar(select(func.count(func.distinct(groups.c.product_id)))
+                                   .where(groups.c.unmatched))
     picked = (await db.execute(
         select(groups.c.product_id, groups.c.competitor_id)
-        .order_by(groups.c.best.desc(), groups.c.product_id, groups.c.competitor_id)
+        .order_by(groups.c.unmatched.desc(), groups.c.best.desc(), groups.c.product_id,
+                  groups.c.competitor_id)
         .offset((page - 1) * limit).limit(limit))).all()
     order = {(pid, cid): i for i, (pid, cid) in enumerate(picked)}
     out = []
@@ -275,7 +285,8 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
                 match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
                 product_size=size, competitor_id=m.competitor_id, competitor=cname,
                 score=m.score, item=ItemOut.model_validate(m.item)))
-    return MatchQueuePage(items=out, total=total, page=page, pages=max(1, -(-total // limit)))
+    return MatchQueuePage(items=out, total=total, page=page, pages=max(1, -(-total // limit)),
+                          no_price_yet=no_price_yet)
 
 
 @router.post("/matches/{match_id}/confirm", status_code=204)
