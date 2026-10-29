@@ -215,6 +215,7 @@ class MatchQueueItem(BaseModel):
     competitor: str
     score: Decimal
     item: ItemOut
+    our_price: Money | None = None  # what we sell it for, to see a price that cannot be it
 
 
 class MatchQueuePage(BaseModel):
