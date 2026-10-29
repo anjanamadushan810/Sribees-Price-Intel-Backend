@@ -1,0 +1,109 @@
+# Sribees Price Intel API + worker — development deploy to the Contabo box
+# (https://devprice.sribees.com).
+#
+# Manual only (workflow_dispatch): every run spends Actions minutes.
+# CI gate -> send the committed tree to the box over SSH and build the image THERE
+# (it carries Chromium, ~1.8 GB: building on the box beats shipping it) -> migrate ->
+# roll out -> smoke test through the public hostname.
+# Production is deployed by hand from a laptop, never from here.
+#
+# Repository secrets:
+#   SSH_HOST, SSH_PORT, SSH_USER, SSH_PRIVATE_KEY, SSH_KNOWN_HOSTS — the Contabo box
+#   DEV_ENV_FILE — the dev stack's whole .env (never echoed)
+name: Deploy Development (Contabo)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: CI gate
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build on the box & deploy
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      DEPLOY_PATH: /opt/sribees-price-intel-dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          # A pinned host key; never StrictHostKeyChecking=no.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          {
+            echo "Host target"
+            echo "  HostName $SSH_HOST"
+            echo "  User $SSH_USER"
+            echo "  Port $SSH_PORT"
+            echo "  IdentityFile ~/.ssh/id_deploy"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking yes"
+            echo "  BatchMode yes"
+            echo "  ServerAliveInterval 20"
+          } > ~/.ssh/config
+          ssh target "echo connected as \$(id -un)"
+
+      - name: Prepare the remote directory
+        # /opt is root-owned and the deploy account has no sudo; it is in the
+        # docker group, so a throwaway container creates the tree once.
+        run: |
+          ssh target "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          if install -d -m 0750 "$DEPLOY_PATH" 2>/dev/null; then exit 0; fi
+          docker run --rm -v /opt:/mnt alpine:3.20 sh -c "
+            mkdir -p '/mnt/$(basename "$DEPLOY_PATH")' &&
+            chown $(id -u):$(id -g) '/mnt/$(basename "$DEPLOY_PATH")' &&
+            chmod 0750 '/mnt/$(basename "$DEPLOY_PATH")'"
+          REMOTE
+
+      - name: Build the image on the box
+        run: |
+          IMAGE="sribees-price-intel:${GITHUB_SHA::12}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          git archive --format=tar HEAD | ssh target "docker build -q -t '$IMAGE' - >/dev/null && echo built $IMAGE"
+
+      - name: Ship the bundle
+        run: |
+          git archive --format=tar HEAD:deploy | ssh target "tar -C '$DEPLOY_PATH' -xf - && chmod 0750 '$DEPLOY_PATH/deploy-dev.sh'"
+
+      - name: Install the environment file (0600, never echoed)
+        env:
+          DEV_ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
+        run: |
+          if [ -z "$DEV_ENV_FILE" ]; then echo "::error::secret DEV_ENV_FILE is empty"; exit 1; fi
+          printf '%s\n' "$DEV_ENV_FILE" | ssh target "umask 077 && cat > '$DEPLOY_PATH/.env'"
+
+      - name: Roll out
+        run: ssh target "'$DEPLOY_PATH/deploy-dev.sh' '$IMAGE'"
+
+      - name: Smoke test through the edge
+        run: |
+          for i in $(seq 1 20); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' https://devprice.sribees.com/api/health || true)"
+            [ "$code" = 200 ] && { echo "https://devprice.sribees.com/api/health answered 200"; exit 0; }
+            sleep 6
+          done
+          echo "::error::https://devprice.sribees.com/api/health answered ${code:-nothing}"
+          exit 1
