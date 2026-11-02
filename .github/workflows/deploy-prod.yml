@@ -111,3 +111,4 @@ jobs:
           done
           echo "::error::https://price.sribees.com/api/health answered ${code:-nothing}"
           exit 1
+
