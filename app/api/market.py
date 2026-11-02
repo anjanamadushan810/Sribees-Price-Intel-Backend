@@ -404,10 +404,10 @@ async def set_cost(branch_id: uuid.UUID, product_id: uuid.UUID, body: CostIn,
     bp.cost_updated_by = p.user_id
     bp.cost_updated_at = datetime.now(UTC)
     await supersede_for(db, branch_id, product_id)
+    after = str(bp.cost_price) if bp.cost_price is not None else None
     await audit.record(db, user_id=p.user_id, action="cost.set", entity="branch_product",
                        entity_id=f"{branch_id}:{product_id}", before={"cost_price": before},
-                       after={"cost_price": str(bp.cost_price) if bp.cost_price is not None else None},
-                       ip_address=client_ip(request))
+                       after={"cost_price": after}, ip_address=client_ip(request))
 
 
 @router.delete("/branches/{branch_id}/products/{product_id}/cost", status_code=204)
