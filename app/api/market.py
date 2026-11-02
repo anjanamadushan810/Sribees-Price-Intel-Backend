@@ -157,10 +157,11 @@ async def _rows(db: AsyncSession, branch_id: uuid.UUID, product_ids: list[uuid.U
             position = "dearer"
         rows.append(ProductRow(
             product_id=prod.product_id, name=prod.name, name_si=prod.name_si, sku=prod.sku,
-            category=prod.category, review_level=prod.review_level, mrp=prod.mrp,
-            our_price=ours, cost_price=bp.cost_price if bp else None,
+            category=prod.category, image_url=prod.image_url, review_level=prod.review_level,
+            mrp=prod.mrp, our_price=ours, cost_price=bp.cost_price if bp else None,
             cheapest_price=cheapest.item.last_price if cheapest else None,
             cheapest_competitor=cheapest.competitor if cheapest else None,
+            cheapest_image=cheapest.item.image_url if cheapest else None,
             position=position, prices=sorted(prices, key=lambda cp: cp.competitor_id),
             pending_suggestion_id=pending.get(prod.product_id),
         ))
