@@ -397,12 +397,36 @@ async def set_cost(branch_id: uuid.UUID, product_id: uuid.UUID, body: CostIn,
     if bp is None:
         raise HTTPException(status_code=404, detail="this branch does not stock this product")
     before = str(bp.cost_price) if bp.cost_price is not None else None
-    bp.cost_price, bp.cost_updated_by = body.cost_price, p.user_id
+    if body.cost_price is None or body.cost_price == 0:
+        bp.cost_price = None
+    else:
+        bp.cost_price = body.cost_price
+    bp.cost_updated_by = p.user_id
     bp.cost_updated_at = datetime.now(UTC)
     await supersede_for(db, branch_id, product_id)
     await audit.record(db, user_id=p.user_id, action="cost.set", entity="branch_product",
                        entity_id=f"{branch_id}:{product_id}", before={"cost_price": before},
-                       after={"cost_price": str(body.cost_price)}, ip_address=client_ip(request))
+                       after={"cost_price": str(bp.cost_price) if bp.cost_price is not None else None},
+                       ip_address=client_ip(request))
+
+
+@router.delete("/branches/{branch_id}/products/{product_id}/cost", status_code=204)
+async def delete_cost(branch_id: uuid.UUID, product_id: uuid.UUID,
+                      request: Request, p: Principal = Depends(require("costs.write")),
+                      db: AsyncSession = Depends(get_db)):
+    if not p.can_see_branch(branch_id):
+        raise HTTPException(status_code=403, detail="you do not have access to this branch")
+    bp = await db.get(BranchProduct, (branch_id, product_id), with_for_update=True)
+    if bp is None:
+        raise HTTPException(status_code=404, detail="this branch does not stock this product")
+    before = str(bp.cost_price) if bp.cost_price is not None else None
+    bp.cost_price = None
+    bp.cost_updated_by = p.user_id
+    bp.cost_updated_at = datetime.now(UTC)
+    await supersede_for(db, branch_id, product_id)
+    await audit.record(db, user_id=p.user_id, action="cost.delete", entity="branch_product",
+                       entity_id=f"{branch_id}:{product_id}", before={"cost_price": before},
+                       after={"cost_price": None}, ip_address=client_ip(request))
 
 
 @router.get("/matches/stats")
