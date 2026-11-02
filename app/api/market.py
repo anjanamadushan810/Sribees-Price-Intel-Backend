@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
@@ -168,6 +169,12 @@ async def _rows(db: AsyncSession, branch_id: uuid.UUID, product_ids: list[uuid.U
     return rows
 
 
+def _gap(r: ProductRow) -> Decimal | None:
+    if r.our_price is not None and r.cheapest_price is not None:
+        return r.our_price - r.cheapest_price
+    return None
+
+
 @router.get("/products", response_model=ProductPage)
 async def list_products(
     branch_id: uuid.UUID | None = None,
@@ -175,6 +182,7 @@ async def list_products(
     review_level: str | None = Query(default=None, pattern="^(daily|weekly|monthly|long)$"),
     position: str | None = Query(default=None, pattern="^(cheaper|equal|dearer|unknown)$"),
     cost_missing: bool = False,
+    sort: str | None = Query(default=None, pattern="^(gap_desc|gap_asc|price_desc|price_asc)$"),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     p: Principal = Depends(require("prices.read")),
@@ -192,6 +200,14 @@ async def list_products(
         rows = [r for r in rows if r.position == position]
     if cost_missing:
         rows = [r for r in rows if r.cost_price is None and r.our_price is not None]
+    if sort == "gap_desc":
+        rows.sort(key=lambda r: (_gap(r) is None, -(_gap(r) or 0)))
+    elif sort == "gap_asc":
+        rows.sort(key=lambda r: (_gap(r) is None, _gap(r) or 0))
+    elif sort == "price_desc":
+        rows.sort(key=lambda r: (r.our_price is None, -(r.our_price or 0)))
+    elif sort == "price_asc":
+        rows.sort(key=lambda r: (r.our_price is None, r.our_price or 0))
     total = len(rows)
     pages = max(1, -(-total // limit))
     return ProductPage(items=rows[(page - 1) * limit: page * limit], total=total, page=page,
