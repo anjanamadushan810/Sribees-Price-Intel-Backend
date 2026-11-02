@@ -245,7 +245,7 @@ class ManualPriceIn(BaseModel):
 
 
 class CostIn(BaseModel):
-    cost_price: Decimal = Field(gt=0, le=10_000_000, decimal_places=2)
+    cost_price: Decimal | None = Field(default=None, ge=0, le=10_000_000, decimal_places=2)
 
 
 # ---------------------------------------------------------------- suggestions
