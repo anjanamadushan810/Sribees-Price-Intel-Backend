@@ -8,7 +8,7 @@ from decimal import Decimal as D
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import inspect, select, text
+from sqlalchemy import func, inspect, select, text
 
 from app.core.db import Base, get_engine, get_sessionmaker
 from app.core.security import hash_password
@@ -503,3 +503,57 @@ async def test_a_search_shop_item_that_no_search_finds_is_gone():
         m = await db.get(ProductMatch, m.match_id)
     assert m.status == "gone" and m.held_status == "auto"
     assert "sunlight soap" in queries  # it also asked by the item's own name
+
+
+async def test_one_shop_can_be_read_on_its_own(api, monkeypatch):
+    from app.api import pricing as pricing_api
+    from app.models import AuditLog, ScrapeRun
+    from app.services import jobs
+
+    started: list = []
+
+    async def fake_daily(_sm, *, sync=True, competitor_ids=None):
+        started.append(competitor_ids)
+        return {}
+
+    monkeypatch.setattr(pricing_api.jobs, "daily", fake_daily)
+    admin = await _login(api, "super_admin")
+    async with get_sessionmaker()() as db:
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+        manual = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.kind == "manual").limit(1))
+
+    def run(cid):
+        return api.post("/jobs/daily", params={"competitor_id": cid}, headers=admin)
+
+    assert (await run(manual)).status_code == 404
+    assert (await run(nexmart)).status_code == 202
+    assert started == [[nexmart]]
+    async with get_sessionmaker()() as db:
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.action == "competitor.run", AuditLog.entity_id == str(nexmart))) == 1
+
+    # While any reading holds the lock, a single shop waits its turn.
+    async with get_engine().connect() as conn:
+        await conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": jobs.LOCK_KEY})
+        assert (await run(nexmart)).status_code == 409
+        await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": jobs.LOCK_KEY})
+    assert len(started) == 1
+
+    # An unfinished run shows the shop as running; the whole-run button is untouched.
+    async with get_sessionmaker()() as db, db.begin():
+        db.add(ScrapeRun(competitor_id=nexmart))
+    shops = {c["competitor_id"]: c for c in (await api.get("/competitors", headers=admin)).json()}
+    assert shops[nexmart]["running"] is True and shops[manual]["running"] is False
+    assert (await api.post("/jobs/daily", headers=admin)).status_code == 202
+    assert started[-1] is None
+    async with get_sessionmaker()() as db, db.begin():
+        await db.execute(text("UPDATE scrape_runs SET finished_at = now(), status = 'ok'"
+                              " WHERE finished_at IS NULL"))
+        await db.execute(text("UPDATE competitors SET is_enabled = false WHERE competitor_id = :c"),
+                         {"c": nexmart})
+    assert (await run(nexmart)).status_code == 409
+    async with get_sessionmaker()() as db, db.begin():
+        await db.execute(text("UPDATE competitors SET is_enabled = true WHERE competitor_id = :c"),
+                         {"c": nexmart})

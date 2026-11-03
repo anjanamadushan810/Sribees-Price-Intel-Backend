@@ -135,6 +135,7 @@ class CompetitorOut(ORM):
     notes: str | None
     last_run_at: datetime | None
     last_ok_at: datetime | None
+    running: bool = False
 
 
 class CompetitorPatch(BaseModel):

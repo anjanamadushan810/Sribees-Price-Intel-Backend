@@ -1,7 +1,7 @@
 """Competitors, our products against their prices, the match queue, manual prices, costs."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -50,7 +50,13 @@ LIVE = ("auto", "confirmed")
 @router.get("/competitors", response_model=list[CompetitorOut])
 async def list_competitors(_: Principal = Depends(require("competitors.read")),
                            db: AsyncSession = Depends(get_db)):
-    return list(await db.scalars(select(Competitor).order_by(Competitor.competitor_id)))
+    # A run left unfinished for hours died with its container; it is not running.
+    running = set(await db.scalars(select(ScrapeRun.competitor_id).where(
+        ScrapeRun.finished_at.is_(None),
+        ScrapeRun.started_at > datetime.now(UTC) - timedelta(hours=6))))
+    return [CompetitorOut.model_validate(c).model_copy(
+                update={"running": c.competitor_id in running})
+            for c in await db.scalars(select(Competitor).order_by(Competitor.competitor_id))]
 
 
 @router.patch("/competitors/{competitor_id}", response_model=CompetitorOut)

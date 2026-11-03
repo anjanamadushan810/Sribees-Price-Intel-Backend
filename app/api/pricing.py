@@ -12,7 +12,7 @@ from app.api.market import _branch_for, _rows, stocked_branches
 from app.api.schemas import SuggestionOut, SummaryOut
 from app.core.db import get_db, get_sessionmaker
 from app.models import Branch, Competitor, Product, ProductMatch, Suggestion
-from app.services import apply, jobs
+from app.services import apply, audit, jobs
 from app.services.online_client import OnlineClient
 
 router = APIRouter(tags=["pricing"])
@@ -122,9 +122,25 @@ async def summary(branch_id: uuid.UUID | None = None,
 
 
 @router.post("/jobs/daily", status_code=202)
-async def run_now(sync: bool = True, competitor_id: int | None = None,
-                  _: Principal = Depends(require("scrape.run"))):
-    """Starts the daily job in the background; the runs list shows how it went."""
+async def run_now(request: Request, sync: bool = True, competitor_id: int | None = None,
+                  p: Principal = Depends(require("scrape.run")),
+                  db: AsyncSession = Depends(get_db)):
+    """Starts the daily job in the background; the runs list shows how it went.
+
+    With competitor_id only that shop is read (the Sources table's per-row Run button).
+    """
+    if competitor_id is not None:
+        c = await db.get(Competitor, competitor_id)
+        if c is None or c.kind != "scraped":
+            raise HTTPException(status_code=404, detail="not an automatic source")
+        if not c.is_enabled:
+            raise HTTPException(status_code=409, detail="this source is switched off")
+        if await jobs.busy(db):
+            raise HTTPException(status_code=409,
+                                detail="a reading is already running; try again when it ends")
+        await audit.record(db, user_id=p.user_id, action="competitor.run", entity="competitor",
+                           entity_id=competitor_id, ip_address=client_ip(request))
+        await db.commit()
     task = asyncio.create_task(jobs.daily(
         get_sessionmaker(), sync=sync,
         competitor_ids=[competitor_id] if competitor_id else None))
