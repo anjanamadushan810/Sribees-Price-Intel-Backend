@@ -298,3 +298,38 @@ def test_every_shop_gives_a_photo_address():
     for items in pages:
         photos = [i.image for i in items if i.image]
         assert photos and all(p.startswith("https://") for p in photos), items[0]
+
+
+async def test_a_pasted_page_is_read_from_the_shops_own_api():
+    from app.adapters.glomark import GlomarkAdapter
+    from app.adapters.woocommerce import WooCommerceAdapter
+
+    seen = []
+
+    def shop(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url.copy_with(scheme="https")).split("://", 1)[1])
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path.startswith("/wp-json"):
+            return httpx.Response(200, json=[{
+                "id": 5, "name": "Prima Flour 25kg", "type": "simple", "sku": "",
+                "permalink": "https://onlinekade.lk/product/prima-flour-25kg/",
+                "prices": {"price": "750000", "currency_minor_unit": 2}}])
+        return httpx.Response(200, text='<script type="application/ld+json">{"@type": "Product",'
+                              ' "name": "Prima Flour 1kg", "offers": {"price": "290",'
+                              ' "availability": "InStock"}}</script>')
+
+    async with PoliteClient("https://onlinekade.lk", transport=httpx.MockTransport(shop)) as c:
+        item = await WooCommerceAdapter(c).read_page("/product/prima-flour-25kg/")
+    assert item.name == "Prima Flour 25kg" and item.price == D("7500.00")
+    assert seen[-1] == "onlinekade.lk/wp-json/wc/store/v1/products?slug=prima-flour-25kg"
+
+    async with PoliteClient("https://glomark.lk", transport=httpx.MockTransport(shop)) as c:
+        g = GlomarkAdapter(c)
+        assert g.external_id("/prima-flour-1kg/p/123?x=1") == "123"
+        item = await g.read_page("/prima-flour-1kg/p/123?x=1")
+    assert (item.external_id, item.price) == ("123", D("290.00"))
+    assert item.url == "https://glomark.lk/prima-flour-1kg/p/123"
+
+    assert shopify.ShopifyAdapter(c).canonical("/collections/a/products/flour-1kg?v=2") == \
+        "/products/flour-1kg"

@@ -221,6 +221,14 @@ class MatchQueueItem(BaseModel):
     item: ItemOut
     our_price: Money | None = None  # what we sell it for, to see a price that cannot be it
     product_image: str | None = None  # our photo, beside theirs
+    method: str = "name"  # 'manual': a person added it from the shop's page
+    flags: list[str] = []  # size or brand that does not agree, shown as a quiet icon
+
+
+class ManualMatchIn(BaseModel):
+    product_id: uuid.UUID
+    competitor_id: int
+    url: str = Field(min_length=8, max_length=1000)
 
 
 class MatchQueuePage(BaseModel):

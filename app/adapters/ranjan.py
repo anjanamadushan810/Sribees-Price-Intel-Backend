@@ -48,6 +48,10 @@ def parse_search(page: str, base_url: str) -> list[ListedItem]:
 class RanjanAdapter(Adapter):
     mode = "search"
 
+    def external_id(self, path: str) -> str | None:
+        found = _PRODUCT_ID.search(path)
+        return found.group(1) if found else None
+
     async def search(self, query: str) -> list[ListedItem]:
         words = query.split()
         tries = [" ".join(words[:2])] + ([words[0]] if len(words) > 1 else [])

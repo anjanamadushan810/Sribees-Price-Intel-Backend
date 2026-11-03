@@ -68,6 +68,21 @@ class GlomarkAdapter(Adapter):
     mode = "sitemap"
     min_delay = 3.0
     needs_browser = False
+    reads_pages = True
+
+    def external_id(self, path: str) -> str | None:
+        found = _PRODUCT.match(urlsplit(path).path)
+        return found["id"] if found else None
+
+    async def read_page(self, path: str) -> ListedItem | None:
+        found = _PRODUCT.match(urlsplit(path).path)
+        if not found:
+            return None
+        page = f"/{found['slug']}/p/{found['id']}"
+        resp = await self.client.get(page)
+        return parse_product(resp.text, Listed(external_id=found["id"],
+                                               name=slug_name(found["slug"]),
+                                               url=f"{self.client.base_url}{page}"))
 
     async def listing(self) -> list[Listed]:
         resp = await self.client.get("/sitemap.xml")

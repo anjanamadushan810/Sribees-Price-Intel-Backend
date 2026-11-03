@@ -557,3 +557,66 @@ async def test_one_shop_can_be_read_on_its_own(api, monkeypatch):
     async with get_sessionmaker()() as db, db.begin():
         await db.execute(text("UPDATE competitors SET is_enabled = true WHERE competitor_id = :c"),
                          {"c": nexmart})
+
+
+def _spar_shop(asked: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/products/sunlight-soap-100g.json":
+            return httpx.Response(200, json={"product": {
+                "id": 9001, "title": "Sunlight Soap 100g", "handle": "sunlight-soap-100g",
+                "images": [{"src": "//cdn.spar/soap.jpg"}],
+                "variants": [{"price": "99.00", "available": True}]}})
+        return httpx.Response(404)
+    return handler
+
+
+async def test_a_pasted_shop_page_becomes_a_card_in_the_queue(api):
+    from app.services import manual_match
+    from app.services.errors import IntelError
+
+    admin = await _login(api, "super_admin")
+    async with get_sessionmaker()() as db:
+        spar = await db.scalar(select(Competitor.competitor_id).where(Competitor.code == "spar"))
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+        user = await db.scalar(select(User.user_id).limit(1))
+
+    # Another site is never read.
+    resp = await api.post("/matches/manual", headers=admin, json={
+        "product_id": SOAP, "competitor_id": spar, "url": "https://evil.example/products/x"})
+    assert resp.status_code == 422 and "SPAR" in resp.json()["detail"]
+
+    asked: list[str] = []
+    url = "https://www.spar2u.lk/collections/soap/products/sunlight-soap-100g?variant=1"
+    async with get_sessionmaker()() as db, db.begin():
+        m = await manual_match.add(db, uuid.UUID(SOAP), spar, url, user, None,
+                                   transport=httpx.MockTransport(_spar_shop(asked)))
+        match_id = m.match_id
+    assert asked == ["/robots.txt", "/products/sunlight-soap-100g.json"]
+
+    page = (await api.get("/matches/queue", headers=admin)).json()
+    card = page["items"][0]
+    assert card["match_id"] == str(match_id) and card["method"] == "manual"
+    assert card["flags"] == ["size differs"]  # ours is 110 g; a person may still confirm
+    assert card["item"]["image_url"] == "https://cdn.spar/soap.jpg"
+
+    # The same page again is found in our own list; the shop is not asked.
+    async with get_sessionmaker()() as db, db.begin():
+        again = await manual_match.add(db, uuid.UUID(SOAP), spar, url, user, None,
+                                       transport=httpx.MockTransport(_spar_shop(asked)))
+        assert again.match_id == match_id
+    assert len(asked) == 2
+
+    assert (await api.post(f"/matches/{match_id}/confirm", headers=admin)).status_code == 204
+    resp = await api.post("/matches/manual", headers=admin, json={
+        "product_id": SOAP, "competitor_id": spar, "url": url})
+    assert resp.status_code == 409
+
+    # A shop whose pages we cannot read by link says so plainly.
+    async with get_sessionmaker()() as db:
+        with pytest.raises(IntelError, match="Nexmart"):
+            await manual_match.find_item(db, await db.get(Competitor, nexmart),
+                                         "https://nexmart.lk/item/77")

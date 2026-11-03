@@ -18,6 +18,7 @@ from app.api.schemas import (
     HistoryPoint,
     ItemOut,
     ManualLinkIn,
+    ManualMatchIn,
     ManualPriceIn,
     MatchHealthItem,
     MatchHealthPage,
@@ -39,7 +40,7 @@ from app.models import (
     ScrapeRun,
     Suggestion,
 )
-from app.services import audit, health, matches, schedule
+from app.services import audit, health, manual_match, matches, schedule
 from app.services.suggest import pricing_settings, supersede_for
 
 router = APIRouter(tags=["market"])
@@ -261,7 +262,8 @@ def _queue_groups(competitor_id: int | None):
         live.product_id == ProductMatch.product_id, live.status.in_(LIVE))
         .correlate_except(live).exists())
     unmatched = func.bool_and(~matched_elsewhere).label("unmatched")
-    q = (select(ProductMatch.product_id, ProductMatch.competitor_id, best, unmatched)
+    manual = func.bool_or(ProductMatch.method == "manual").label("manual")
+    q = (select(ProductMatch.product_id, ProductMatch.competitor_id, best, unmatched, manual)
          .join(Product, Product.product_id == ProductMatch.product_id)
          .where(ProductMatch.status == "candidate", Product.is_active.is_(True))
          .group_by(ProductMatch.product_id, ProductMatch.competitor_id))
@@ -290,7 +292,8 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
                                    .where(groups.c.unmatched))
     picked = (await db.execute(
         select(groups.c.product_id, groups.c.competitor_id)
-        .order_by(groups.c.unmatched.desc(), groups.c.best.desc(), groups.c.product_id,
+        .order_by(groups.c.manual.desc(), groups.c.unmatched.desc(), groups.c.best.desc(),
+                  groups.c.product_id,
                   groups.c.competitor_id)
         .offset((page - 1) * limit).limit(limit))).all()
     order = {(pid, cid): i for i, (pid, cid) in enumerate(picked)}
@@ -308,14 +311,17 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
             .where(BranchProduct.product_id.in_({pid for pid, _ in picked}),
                    BranchProduct.is_active.is_(True))
             .group_by(BranchProduct.product_id))).all())
-        rows.sort(key=lambda r: (order[(r[0].product_id, r[0].competitor_id)], -r[0].score))
+        rows.sort(key=lambda r: (order[(r[0].product_id, r[0].competitor_id)],
+                                 r[0].method != "manual", -r[0].score))
         for m, prod, cname in rows:
             size = f"{prod.size_value.normalize():f} {prod.size_unit}" if prod.size_value else None
             out.append(MatchQueueItem(
                 match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
                 product_size=size, competitor_id=m.competitor_id, competitor=cname,
                 score=m.score, item=ItemOut.model_validate(m.item),
-                our_price=our_prices.get(prod.product_id), product_image=prod.image_url))
+                our_price=our_prices.get(prod.product_id), product_image=prod.image_url,
+                method=m.method,
+                flags=manual_match.flags(prod, m.item) if m.method == "manual" else []))
     return MatchQueuePage(items=out, total=total, page=page, pages=max(1, -(-total // limit)),
                           no_price_yet=no_price_yet)
 
@@ -384,6 +390,16 @@ async def match_health(status: str = Query(default="changed", pattern="^(changed
             item=ItemOut.model_validate(m.item)))
     return MatchHealthPage(items=items, total=total, page=page,
                            pages=max(1, -(-total // limit)))
+
+
+@router.post("/matches/manual", status_code=201)
+async def add_manual_match(body: ManualMatchIn, request: Request,
+                           p: Principal = Depends(require("matches.decide")),
+                           db: AsyncSession = Depends(get_db)):
+    """A shop's product page, pasted by a person, becomes a card in the Match Queue."""
+    m = await manual_match.add(db, body.product_id, body.competitor_id, body.url,
+                               p.user_id, client_ip(request))
+    return {"match_id": str(m.match_id)}
 
 
 @router.post("/matches", status_code=201)

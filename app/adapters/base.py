@@ -218,3 +218,18 @@ class Adapter:
 
     async def search(self, query: str) -> list[ListedItem]:  # pragma: no cover - interface
         raise NotImplementedError
+
+    # A product page someone pasted (the Match Queue's "Add manual match"). `path` is the
+    # page's path and query on this shop's own site.
+    reads_pages = False  # True where read_page is written
+
+    def canonical(self, path: str) -> str:
+        """The page's path as this shop's items store it in `url`."""
+        return path
+
+    def external_id(self, path: str) -> str | None:
+        """The shop's own id for the product on that page, when the address carries it."""
+        return None
+
+    async def read_page(self, path: str) -> ListedItem | None:  # pragma: no cover - interface
+        raise NotImplementedError

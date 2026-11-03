@@ -7,6 +7,7 @@ barcode with no person involved."""
 import html
 from collections.abc import AsyncIterator
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from app.adapters.base import Adapter, ListedItem, SourceFailed, absolute
 from app.core.config import get_settings
@@ -51,6 +52,20 @@ def parse_page(data: list, base_url: str) -> list[ListedItem]:
 
 class WooCommerceAdapter(Adapter):
     mode = "catalogue"
+    reads_pages = True
+
+    async def read_page(self, path: str) -> ListedItem | None:
+        # /product/<slug>/ -> the Store API's product with that slug
+        slug = next((s for s in reversed(urlsplit(path).path.split("/")) if s), None)
+        if not slug:
+            return None
+        resp = await self.client.get(PATH, {"slug": slug})
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise SourceFailed("WooCommerce returned something that is not JSON") from exc
+        items = parse_page(data if isinstance(data, list) else [], self.client.base_url)
+        return items[0] if items else None
 
     async def catalogue(self) -> AsyncIterator[ListedItem]:
         pages, page = 1, 1
