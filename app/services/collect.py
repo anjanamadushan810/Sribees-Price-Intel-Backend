@@ -29,7 +29,7 @@ from app.models import (
     ScrapeRun,
     SearchCheck,
 )
-from app.services import matcher, schedule
+from app.services import health, matcher, schedule
 from app.services.normalize import Parsed, barcode_of, parse
 
 log = logging.getLogger("intel.collect")
@@ -272,12 +272,14 @@ async def run(sessionmaker: async_sessionmaker, competitor_id: int,
         await db.flush()
         run_id, adapter_name, base_url = scrape_run.run_id, competitor.adapter, competitor.base_url
 
-    status, error, seen, requests = "ok", None, 0, 0
+    status, error, seen, requests, mode = "ok", None, 0, 0, None
+    started = datetime.now(UTC)
     try:
         async with PoliteClient(base_url, transport=transport) as client:
             adapter = build(adapter_name or "", client)
             if adapter is None:
                 raise SourceFailed(f"adapter '{adapter_name}' is not written yet")
+            mode = adapter.mode
             try:
                 async with adapter:
                     if adapter.mode == "catalogue":
@@ -295,6 +297,15 @@ async def run(sessionmaker: async_sessionmaker, competitor_id: int,
     except Exception as exc:  # noqa: BLE001 -- recorded on the run, then re-raised
         status, error = "failed", f"{exc.__class__.__name__}: {exc}"
         log.exception("collection run %s crashed", run_id)
+
+    if status == "ok":
+        # Only a good run can say an item changed or left the shop.
+        async with sessionmaker() as db, db.begin():
+            counts = await health.judge(db, competitor_id, started,
+                                        expect_all=mode in ("catalogue", "sitemap"))
+            if counts["gone"]:
+                await propose_matches(db, competitor_id)  # a replacement, same rules
+        log.info("match health at shop %s: %s", competitor_id, counts)
 
     now = datetime.now(UTC)
     async with sessionmaker() as db, db.begin():
@@ -351,8 +362,24 @@ async def _run_search(sessionmaker, competitor_id: int, adapter) -> int:
                 raise
             continue
         failures_in_a_row = 0
+        async with sessionmaker() as db:
+            live = await db.scalar(select(ProductMatch).where(
+                ProductMatch.product_id == p.product_id,
+                ProductMatch.competitor_id == competitor_id, ProductMatch.status.in_(LIVE)))
+        missing = live is not None and live.item.external_id not in {
+            it.external_id for it in items}
+        if missing:
+            # Our search may simply word it differently: ask for the item by its own name.
+            try:
+                again = await adapter.search(search_query(live.item.name))
+                items = items + again
+                missing = live.item.external_id not in {it.external_id for it in again}
+            except SourceFailed:
+                missing = False  # not knowing is not "gone"
         async with sessionmaker() as db, db.begin():
             await _store(db, competitor_id, items, now)
+            if missing:
+                await health.miss(db, await db.get(ProductMatch, live.match_id))
             await db.execute(insert(SearchCheck).values(
                 product_id=p.product_id, competitor_id=competitor_id, checked_at=now,
             ).on_conflict_do_update(index_elements=["product_id", "competitor_id"],

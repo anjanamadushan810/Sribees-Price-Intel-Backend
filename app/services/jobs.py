@@ -5,12 +5,13 @@ A Postgres advisory lock makes sure only one copy runs at a time.
 """
 
 import logging
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models import Competitor
-from app.services import catalog_sync, collect, suggest
+from app.services import catalog_sync, collect, digest, suggest
 from app.services.online_client import OnlineClient
 
 log = logging.getLogger("intel.jobs")
@@ -24,6 +25,7 @@ async def daily(sessionmaker: async_sessionmaker, *, sync: bool = True,
         if not got:
             return {"skipped": "another run is in progress"}
         try:
+            started = datetime.now(UTC)
             report: dict = {}
             if sync:
                 async with OnlineClient() as online, sessionmaker() as db, db.begin():
@@ -37,6 +39,8 @@ async def daily(sessionmaker: async_sessionmaker, *, sync: bool = True,
                                            "error": run.error}
             async with sessionmaker() as db, db.begin():
                 report["suggestions"] = await suggest.refresh(db)
+            async with sessionmaker() as db:
+                report["health_email"] = await digest.send(db, started)
             log.info("daily run: %s", report)
             return report
         finally:

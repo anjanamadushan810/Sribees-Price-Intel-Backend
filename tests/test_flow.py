@@ -381,3 +381,125 @@ async def test_one_failing_search_page_does_not_end_the_run():
             select(Competitor.competitor_id).where(Competitor.code == "arpico"))
     await _run_search(get_sessionmaker(), arpico, Flaky())
     assert Flaky.calls >= 2  # carried on after the failure
+
+
+# ---------------------------------------------------------------- match health
+def _nexmart_with(soap: dict | None):
+    """The Nexmart listing with the Sunlight soap changed or gone; filler keeps the run
+    looking complete (a run that sees far fewer items marks nothing missing)."""
+    filler = [{"sku": f"FILL-{n}", "name": f"Filler Item {n} 100g", "price": 10,
+               "inStock": True, "enabled": True} for n in range(12)]
+
+    def shop(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        items = [{"sku": "SOAP-1", "name": "Lux Soap 100g", "price": 150, "inStock": True,
+                  "enabled": True}, *filler]
+        if soap is not None:
+            items.append({"sku": "SOAP-2", "price": 95, "inStock": True, "enabled": True,
+                          **soap})
+        return httpx.Response(200, json={"pages": 1, "items": items})
+    return shop
+
+
+async def _soap_match() -> ProductMatch:
+    async with get_sessionmaker()() as db:
+        return await db.scalar(select(ProductMatch).where(
+            ProductMatch.product_id == uuid.UUID(SOAP),
+            ProductMatch.status.in_(("auto", "confirmed", "changed", "gone"))))
+
+
+async def test_shop_changing_or_dropping_a_matched_item_is_noticed(api):
+    async with get_sessionmaker()() as db:
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+
+    async def run(soap):
+        r = await collect.run(get_sessionmaker(), nexmart,
+                              transport=httpx.MockTransport(_nexmart_with(soap)))
+        assert r.status == "ok", r.error
+        return await _soap_match()
+
+    # A tidier title, same brand and size: remembered quietly, still live.
+    m = await run({"name": "Sunlight Soap Bar - 110 g"})
+    assert m.status == "auto" and m.seen_name == "Sunlight Soap Bar - 110 g"
+
+    # Smaller pack: its price stops counting until a person looks.
+    m = await run({"name": "Sunlight Soap Bar - 100 g"})
+    assert m.status == "changed" and m.held_status == "auto"
+    assert m.health_note == "size 110 g -> 100 g"
+    checker = await _login(api, "price_checker")
+    assert (await api.get("/matches/health/count", headers=checker)).json() == {
+        "changed": 1, "gone": 0}
+    page = (await api.get("/matches/health", headers=checker)).json()
+    assert page["items"][0]["seen_name"] == "Sunlight Soap Bar - 110 g"
+    assert page["items"][0]["item"]["name"] == "Sunlight Soap Bar - 100 g"
+    admin = await _login(api, "super_admin")
+    row = (await api.get(f"/products/{SOAP}", headers=admin)).json()
+    assert row["cheapest_price"] is None
+
+    # The checker says it is still ours: confirmed, and the new size is the reference.
+    assert (await api.post(f"/matches/{m.match_id}/keep", headers=checker)).status_code == 204
+    assert (await api.post(f"/matches/{m.match_id}/keep", headers=checker)).status_code == 409
+    m = await _soap_match()
+    assert m.status == "confirmed" and m.seen_size_value == D("100")
+
+    # Not listed: one run is not enough, the second makes it gone.
+    assert (await run(None)).status == "confirmed"
+    m = await run(None)
+    assert m.status == "gone" and m.held_status == "confirmed"
+
+    # Listed again: back by itself.
+    m = await run({"name": "Sunlight Soap Bar - 100 g"})
+    assert m.status == "confirmed" and m.misses == 0
+    async with get_sessionmaker()() as db:
+        actions = set(await db.scalars(text("SELECT action FROM audit_log")))
+    assert {"match.changed", "match.keep", "match.gone", "match.back"} <= actions
+
+
+async def test_a_short_run_marks_nothing_missing():
+    async with get_sessionmaker()() as db:
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+
+    def tiny(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, json={"pages": 1, "items": [
+            {"sku": "SOAP-1", "name": "Lux Soap 100g", "price": 150, "inStock": True,
+             "enabled": True}]})
+
+    for _ in range(3):
+        await collect.run(get_sessionmaker(), nexmart, transport=httpx.MockTransport(tiny))
+    m = await _soap_match()
+    assert m.status == "confirmed" and m.misses == 0
+
+
+async def test_a_search_shop_item_that_no_search_finds_is_gone():
+    from app.services.collect import _run_search
+
+    async with get_sessionmaker()() as db, db.begin():
+        arpico = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "arpico"))
+        item = CompetitorItem(competitor_id=arpico, external_id="ARP-SOAP",
+                              name="Sunlight Soap 110g", last_price=D("99"))
+        db.add(item)
+        await db.flush()
+        m = ProductMatch(product_id=uuid.UUID(SOAP), item_id=item.item_id,
+                         competitor_id=arpico, status="auto", method="name", score=1)
+        db.add(m)
+        await db.execute(text("DELETE FROM search_checks"))
+    queries = []
+
+    class Empty:
+        mode = "search"
+
+        async def search(self, query):
+            queries.append(query)
+            return []
+
+    await _run_search(get_sessionmaker(), arpico, Empty())
+    async with get_sessionmaker()() as db:
+        m = await db.get(ProductMatch, m.match_id)
+    assert m.status == "gone" and m.held_status == "auto"
+    assert "sunlight soap" in queries  # it also asked by the item's own name

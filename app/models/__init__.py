@@ -242,6 +242,16 @@ class ProductMatch(Base):
     decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Match health (owner, 2026-11-03): the shop's title, size and barcode as they were
+    # when the match was made, to notice the shop changing or dropping the item.
+    seen_name: Mapped[str | None] = mapped_column(String(300))
+    seen_size_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    seen_size_unit: Mapped[str | None] = mapped_column(String(4))
+    seen_barcode: Mapped[str | None] = mapped_column(String(20))
+    misses: Mapped[int] = mapped_column(Integer, default=0)
+    held_status: Mapped[str | None] = mapped_column(String(10))
+    health_note: Mapped[str | None] = mapped_column(String(300))
+    health_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Inner join: FOR UPDATE refuses the nullable side of an outer join.
     item: Mapped[CompetitorItem] = relationship(lazy="joined", innerjoin=True)

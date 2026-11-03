@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     web_bot_auth_key: str = ""
     signature_agent: str = ""
 
+    # The daily match-health email (owner, 2026-11-03). Any of host / from / to empty =
+    # no email; the admin's Match health page shows the same list either way.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    health_email_to: str = ""
+    admin_url: str = "https://price.sribees.com"
+
     @model_validator(mode="after")
     def _production_keeps_two_factor(self) -> "Settings":
         if (self.environment == "production" and not self.two_factor
