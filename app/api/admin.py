@@ -101,13 +101,18 @@ async def create_user(
 ):
     if await db.scalar(select(User).where(func.lower(User.email) == body.email.lower())):
         raise HTTPException(status_code=409, detail="a user with this email exists")
+    if body.role == "branch_manager" and not body.all_branches and not body.branch_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="a branch manager must have at least one branch or all_branches enabled",
+        )
     user = User(
         email=body.email.lower(),
         full_name=body.full_name,
         role=body.role,
         password_hash=hash_password(body.password),
         all_branches=body.all_branches,
-        branches=await _branches(db, body.branch_ids),
+        branches=[] if body.all_branches else await _branches(db, body.branch_ids),
     )
     db.add(user)
     await db.flush()
@@ -141,11 +146,25 @@ async def update_user(
             raise HTTPException(status_code=422,
                                 detail="there must always be an active super admin")
 
+    target_role = changes.get("role", user.role)
+    target_all_branches = changes.get("all_branches", user.all_branches)
+    target_branch_ids = (
+        body.branch_ids
+        if body.branch_ids is not None
+        else [b.branch_id for b in user.branches]
+    )
+
+    if target_role == "branch_manager" and not target_all_branches and not target_branch_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="a branch manager must have at least one branch or all_branches enabled",
+        )
+
     for field in ("full_name", "role", "is_active", "all_branches"):
         if field in changes:
             setattr(user, field, changes[field])
-    if body.branch_ids is not None:
-        user.branches = await _branches(db, body.branch_ids)
+    if body.branch_ids is not None or user.all_branches:
+        user.branches = [] if user.all_branches else await _branches(db, body.branch_ids or [])
     must_sign_in_again = False
     if body.password:
         user.password_hash = hash_password(body.password)

@@ -182,12 +182,14 @@ class ProductRow(BaseModel):
     name_si: str | None
     sku: str | None
     category: str | None
+    image_url: str | None = None
     review_level: str
     mrp: Money | None
     our_price: Money | None
     cost_price: Money | None
     cheapest_price: Money | None
     cheapest_competitor: str | None
+    cheapest_image: str | None = None
     position: Literal["cheaper", "equal", "dearer", "unknown"]
     prices: list[CompetitorPrice]
     pending_suggestion_id: uuid.UUID | None = None
@@ -243,7 +245,7 @@ class ManualPriceIn(BaseModel):
 
 
 class CostIn(BaseModel):
-    cost_price: Decimal = Field(gt=0, le=10_000_000, decimal_places=2)
+    cost_price: Decimal | None = Field(default=None, ge=0, le=10_000_000, decimal_places=2)
 
 
 # ---------------------------------------------------------------- suggestions

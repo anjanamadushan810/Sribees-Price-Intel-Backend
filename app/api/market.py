@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
@@ -157,14 +158,21 @@ async def _rows(db: AsyncSession, branch_id: uuid.UUID, product_ids: list[uuid.U
             position = "dearer"
         rows.append(ProductRow(
             product_id=prod.product_id, name=prod.name, name_si=prod.name_si, sku=prod.sku,
-            category=prod.category, review_level=prod.review_level, mrp=prod.mrp,
-            our_price=ours, cost_price=bp.cost_price if bp else None,
+            category=prod.category, image_url=prod.image_url, review_level=prod.review_level,
+            mrp=prod.mrp, our_price=ours, cost_price=bp.cost_price if bp else None,
             cheapest_price=cheapest.item.last_price if cheapest else None,
             cheapest_competitor=cheapest.competitor if cheapest else None,
+            cheapest_image=cheapest.item.image_url if cheapest else None,
             position=position, prices=sorted(prices, key=lambda cp: cp.competitor_id),
             pending_suggestion_id=pending.get(prod.product_id),
         ))
     return rows
+
+
+def _gap(r: ProductRow) -> Decimal | None:
+    if r.our_price is not None and r.cheapest_price is not None:
+        return r.our_price - r.cheapest_price
+    return None
 
 
 @router.get("/products", response_model=ProductPage)
@@ -174,6 +182,7 @@ async def list_products(
     review_level: str | None = Query(default=None, pattern="^(daily|weekly|monthly|long)$"),
     position: str | None = Query(default=None, pattern="^(cheaper|equal|dearer|unknown)$"),
     cost_missing: bool = False,
+    sort: str | None = Query(default=None, pattern="^(gap_desc|gap_asc|price_desc|price_asc)$"),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     p: Principal = Depends(require("prices.read")),
@@ -191,6 +200,14 @@ async def list_products(
         rows = [r for r in rows if r.position == position]
     if cost_missing:
         rows = [r for r in rows if r.cost_price is None and r.our_price is not None]
+    if sort == "gap_desc":
+        rows.sort(key=lambda r: (_gap(r) is None, -(_gap(r) or 0)))
+    elif sort == "gap_asc":
+        rows.sort(key=lambda r: (_gap(r) is None, _gap(r) or 0))
+    elif sort == "price_desc":
+        rows.sort(key=lambda r: (r.our_price is None, -(r.our_price or 0)))
+    elif sort == "price_asc":
+        rows.sort(key=lambda r: (r.our_price is None, r.our_price or 0))
     total = len(rows)
     pages = max(1, -(-total // limit))
     return ProductPage(items=rows[(page - 1) * limit: page * limit], total=total, page=page,
@@ -396,12 +413,36 @@ async def set_cost(branch_id: uuid.UUID, product_id: uuid.UUID, body: CostIn,
     if bp is None:
         raise HTTPException(status_code=404, detail="this branch does not stock this product")
     before = str(bp.cost_price) if bp.cost_price is not None else None
-    bp.cost_price, bp.cost_updated_by = body.cost_price, p.user_id
+    if body.cost_price is None or body.cost_price == 0:
+        bp.cost_price = None
+    else:
+        bp.cost_price = body.cost_price
+    bp.cost_updated_by = p.user_id
     bp.cost_updated_at = datetime.now(UTC)
     await supersede_for(db, branch_id, product_id)
+    after = str(bp.cost_price) if bp.cost_price is not None else None
     await audit.record(db, user_id=p.user_id, action="cost.set", entity="branch_product",
                        entity_id=f"{branch_id}:{product_id}", before={"cost_price": before},
-                       after={"cost_price": str(body.cost_price)}, ip_address=client_ip(request))
+                       after={"cost_price": after}, ip_address=client_ip(request))
+
+
+@router.delete("/branches/{branch_id}/products/{product_id}/cost", status_code=204)
+async def delete_cost(branch_id: uuid.UUID, product_id: uuid.UUID,
+                      request: Request, p: Principal = Depends(require("costs.write")),
+                      db: AsyncSession = Depends(get_db)):
+    if not p.can_see_branch(branch_id):
+        raise HTTPException(status_code=403, detail="you do not have access to this branch")
+    bp = await db.get(BranchProduct, (branch_id, product_id), with_for_update=True)
+    if bp is None:
+        raise HTTPException(status_code=404, detail="this branch does not stock this product")
+    before = str(bp.cost_price) if bp.cost_price is not None else None
+    bp.cost_price = None
+    bp.cost_updated_by = p.user_id
+    bp.cost_updated_at = datetime.now(UTC)
+    await supersede_for(db, branch_id, product_id)
+    await audit.record(db, user_id=p.user_id, action="cost.delete", entity="branch_product",
+                       entity_id=f"{branch_id}:{product_id}", before={"cost_price": before},
+                       after={"cost_price": None}, ip_address=client_ip(request))
 
 
 @router.get("/matches/stats")
