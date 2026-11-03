@@ -50,6 +50,10 @@ class CargillsAdapter(Adapter):
     mode = "search"
     min_delay = 5.0
 
+    def external_id(self, path: str) -> str | None:
+        # Cards link to /ProductDetails/...?IN=..; the item keeps that path and query.
+        return path[:120] if "/ProductDetails/" in path else None
+
     async def __aenter__(self) -> "CargillsAdapter":
         self.renderer = await Renderer(self.min_delay).__aenter__()
         return self

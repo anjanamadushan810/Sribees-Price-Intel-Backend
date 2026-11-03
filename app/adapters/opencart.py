@@ -42,6 +42,10 @@ def parse_search(html: str) -> list[ListedItem]:
 class OpenCartAdapter(Adapter):
     mode = "search"
 
+    def external_id(self, path: str) -> str | None:
+        found = _PRODUCT_ID.search(path)
+        return found.group(1) if found else None
+
     async def search(self, query: str) -> list[ListedItem]:
         resp = await self.client.get(
             "/index.php",

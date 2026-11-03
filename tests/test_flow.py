@@ -8,7 +8,7 @@ from decimal import Decimal as D
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import inspect, select, text
+from sqlalchemy import func, inspect, select, text
 
 from app.core.db import Base, get_engine, get_sessionmaker
 from app.core.security import hash_password
@@ -503,3 +503,120 @@ async def test_a_search_shop_item_that_no_search_finds_is_gone():
         m = await db.get(ProductMatch, m.match_id)
     assert m.status == "gone" and m.held_status == "auto"
     assert "sunlight soap" in queries  # it also asked by the item's own name
+
+
+async def test_one_shop_can_be_read_on_its_own(api, monkeypatch):
+    from app.api import pricing as pricing_api
+    from app.models import AuditLog, ScrapeRun
+    from app.services import jobs
+
+    started: list = []
+
+    async def fake_daily(_sm, *, sync=True, competitor_ids=None):
+        started.append(competitor_ids)
+        return {}
+
+    monkeypatch.setattr(pricing_api.jobs, "daily", fake_daily)
+    admin = await _login(api, "super_admin")
+    async with get_sessionmaker()() as db:
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+        manual = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.kind == "manual").limit(1))
+
+    def run(cid):
+        return api.post("/jobs/daily", params={"competitor_id": cid}, headers=admin)
+
+    assert (await run(manual)).status_code == 404
+    assert (await run(nexmart)).status_code == 202
+    assert started == [[nexmart]]
+    async with get_sessionmaker()() as db:
+        assert await db.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.action == "competitor.run", AuditLog.entity_id == str(nexmart))) == 1
+
+    # While any reading holds the lock, a single shop waits its turn.
+    async with get_engine().connect() as conn:
+        await conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": jobs.LOCK_KEY})
+        assert (await run(nexmart)).status_code == 409
+        await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": jobs.LOCK_KEY})
+    assert len(started) == 1
+
+    # An unfinished run shows the shop as running; the whole-run button is untouched.
+    async with get_sessionmaker()() as db, db.begin():
+        db.add(ScrapeRun(competitor_id=nexmart))
+    shops = {c["competitor_id"]: c for c in (await api.get("/competitors", headers=admin)).json()}
+    assert shops[nexmart]["running"] is True and shops[manual]["running"] is False
+    assert (await api.post("/jobs/daily", headers=admin)).status_code == 202
+    assert started[-1] is None
+    async with get_sessionmaker()() as db, db.begin():
+        await db.execute(text("UPDATE scrape_runs SET finished_at = now(), status = 'ok'"
+                              " WHERE finished_at IS NULL"))
+        await db.execute(text("UPDATE competitors SET is_enabled = false WHERE competitor_id = :c"),
+                         {"c": nexmart})
+    assert (await run(nexmart)).status_code == 409
+    async with get_sessionmaker()() as db, db.begin():
+        await db.execute(text("UPDATE competitors SET is_enabled = true WHERE competitor_id = :c"),
+                         {"c": nexmart})
+
+
+def _spar_shop(asked: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/products/sunlight-soap-100g.json":
+            return httpx.Response(200, json={"product": {
+                "id": 9001, "title": "Sunlight Soap 100g", "handle": "sunlight-soap-100g",
+                "images": [{"src": "//cdn.spar/soap.jpg"}],
+                "variants": [{"price": "99.00", "available": True}]}})
+        return httpx.Response(404)
+    return handler
+
+
+async def test_a_pasted_shop_page_becomes_a_card_in_the_queue(api):
+    from app.services import manual_match
+    from app.services.errors import IntelError
+
+    admin = await _login(api, "super_admin")
+    async with get_sessionmaker()() as db:
+        spar = await db.scalar(select(Competitor.competitor_id).where(Competitor.code == "spar"))
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+        user = await db.scalar(select(User.user_id).limit(1))
+
+    # Another site is never read.
+    resp = await api.post("/matches/manual", headers=admin, json={
+        "product_id": SOAP, "competitor_id": spar, "url": "https://evil.example/products/x"})
+    assert resp.status_code == 422 and "SPAR" in resp.json()["detail"]
+
+    asked: list[str] = []
+    url = "https://www.spar2u.lk/collections/soap/products/sunlight-soap-100g?variant=1"
+    async with get_sessionmaker()() as db, db.begin():
+        m = await manual_match.add(db, uuid.UUID(SOAP), spar, url, user, None,
+                                   transport=httpx.MockTransport(_spar_shop(asked)))
+        match_id = m.match_id
+    assert asked == ["/robots.txt", "/products/sunlight-soap-100g.json"]
+
+    page = (await api.get("/matches/queue", headers=admin)).json()
+    card = page["items"][0]
+    assert card["match_id"] == str(match_id) and card["method"] == "manual"
+    assert card["flags"] == ["size differs"]  # ours is 110 g; a person may still confirm
+    assert card["item"]["image_url"] == "https://cdn.spar/soap.jpg"
+
+    # The same page again is found in our own list; the shop is not asked.
+    async with get_sessionmaker()() as db, db.begin():
+        again = await manual_match.add(db, uuid.UUID(SOAP), spar, url, user, None,
+                                       transport=httpx.MockTransport(_spar_shop(asked)))
+        assert again.match_id == match_id
+    assert len(asked) == 2
+
+    assert (await api.post(f"/matches/{match_id}/confirm", headers=admin)).status_code == 204
+    resp = await api.post("/matches/manual", headers=admin, json={
+        "product_id": SOAP, "competitor_id": spar, "url": url})
+    assert resp.status_code == 409
+
+    # A shop whose pages we cannot read by link says so plainly.
+    async with get_sessionmaker()() as db:
+        with pytest.raises(IntelError, match="Nexmart"):
+            await manual_match.find_item(db, await db.get(Competitor, nexmart),
+                                         "https://nexmart.lk/item/77")

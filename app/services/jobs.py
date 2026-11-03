@@ -8,7 +8,7 @@ import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Competitor
 from app.services import catalog_sync, collect, digest, suggest
@@ -16,6 +16,15 @@ from app.services.online_client import OnlineClient
 
 log = logging.getLogger("intel.jobs")
 LOCK_KEY = 7_331_204  # any constant; shared by every copy of this app
+
+
+async def busy(db: AsyncSession) -> bool:
+    """True while any copy of the daily job holds the lock (on any connection)."""
+    return bool(await db.scalar(text(
+        "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted"
+        " AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+        " AND classid = :hi AND objid = :lo AND objsubid = 1)"),
+        {"hi": LOCK_KEY >> 32, "lo": LOCK_KEY & 0xFFFFFFFF}))
 
 
 async def daily(sessionmaker: async_sessionmaker, *, sync: bool = True,

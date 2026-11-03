@@ -3,12 +3,14 @@
 SPAR lists one variant per store with the same price, so the lowest available
 variant price is the shop's price."""
 
+import re
 from collections.abc import AsyncIterator
 
 from app.adapters.base import Adapter, ListedItem, SourceFailed, absolute, money
 from app.core.config import get_settings
 
 PAGE_SIZE = 250
+_HANDLE = re.compile(r"/products/([^/?#.]+)")
 
 
 def parse_page(data: dict, base_url: str) -> list[ListedItem]:
@@ -39,6 +41,24 @@ def parse_page(data: dict, base_url: str) -> list[ListedItem]:
 class ShopifyAdapter(Adapter):
     mode = "catalogue"
     min_delay = 5.0  # Shopify answers 429 to a 2-second pace
+    reads_pages = True
+
+    def canonical(self, path: str) -> str:
+        # /collections/flour/products/x?variant=1 is the same page as /products/x
+        found = _HANDLE.search(path)
+        return f"/products/{found.group(1)}" if found else path
+
+    async def read_page(self, path: str) -> ListedItem | None:
+        found = _HANDLE.search(path)
+        if not found:
+            return None
+        resp = await self.client.get(f"/products/{found.group(1)}.json")
+        try:
+            product = resp.json().get("product")
+        except (ValueError, AttributeError) as exc:
+            raise SourceFailed("Shopify returned something that is not JSON") from exc
+        items = parse_page({"products": [product] if product else []}, self.client.base_url)
+        return items[0] if items else None
 
     async def catalogue(self) -> AsyncIterator[ListedItem]:
         limit = get_settings().scrape_max_pages
