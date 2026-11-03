@@ -79,12 +79,21 @@ async def find_item(db: AsyncSession, competitor: Competitor, url: str,
     return await db.get(CompetitorItem, ids[listed.external_id])
 
 
+def _parsed(product: Product, item: CompetitorItem):
+    return (replace(parse(product.name), size_value=product.size_value,
+                    size_unit=product.size_unit),
+            replace(parse(item.name), size_value=item.size_value, size_unit=item.size_unit))
+
+
+def similarity(product: Product, item: CompetitorItem) -> float:
+    """How alike the two names read, for the card's percentage."""
+    return matcher.name_score(*_parsed(product, item))
+
+
 def flags(product: Product, item: CompetitorItem) -> list[str]:
     """What a person should look at twice: the owner's brand + size rule, shown as a quiet
     note on the card (owner 2026-11-03: a person may still confirm)."""
-    ours = replace(parse(product.name), size_value=product.size_value,
-                   size_unit=product.size_unit)
-    theirs = replace(parse(item.name), size_value=item.size_value, size_unit=item.size_unit)
+    ours, theirs = _parsed(product, item)
     out = []
     size = matcher.same_size(ours, theirs)
     if size is False:
@@ -123,6 +132,7 @@ async def add(db: AsyncSession, product_id: uuid.UUID, competitor_id: int, url: 
         db.add(m)
     # A pair once rejected may come back: a person asked for it by name.
     m.status, m.method, m.decided_by, m.decided_at = "candidate", "manual", None, None
+    m.score = similarity(product, item)
     await db.flush()
     await audit.record(db, user_id=user_id, action="match.add", entity="match",
                        entity_id=m.match_id, after={"product_id": str(product_id),

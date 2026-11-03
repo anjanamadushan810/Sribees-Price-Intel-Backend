@@ -601,6 +601,7 @@ async def test_a_pasted_shop_page_becomes_a_card_in_the_queue(api):
     card = page["items"][0]
     assert card["match_id"] == str(match_id) and card["method"] == "manual"
     assert card["flags"] == ["size differs"]  # ours is 110 g; a person may still confirm
+    assert float(card["score"]) > 0.6  # the names read alike though the rule says no
     assert card["item"]["image_url"] == "https://cdn.spar/soap.jpg"
 
     # The same page again is found in our own list; the shop is not asked.
