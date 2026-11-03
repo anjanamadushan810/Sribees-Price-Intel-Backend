@@ -230,6 +230,31 @@ class MatchQueuePage(BaseModel):
     pages: int
 
 
+class MatchHealthItem(BaseModel):
+    match_id: uuid.UUID
+    product_id: uuid.UUID
+    product_name: str
+    product_size: str | None
+    product_image: str | None
+    our_price: Money | None
+    competitor_id: int
+    competitor: str
+    status: Literal["changed", "gone"]
+    was: str | None  # auto / confirmed before the shop moved
+    method: str
+    note: str | None
+    since: datetime | None
+    seen_name: str | None  # the title when it was matched
+    item: ItemOut  # what the shop shows now
+
+
+class MatchHealthPage(BaseModel):
+    items: list[MatchHealthItem]
+    total: int
+    page: int
+    pages: int
+
+
 class ManualLinkIn(BaseModel):
     product_id: uuid.UUID
     item_id: uuid.UUID

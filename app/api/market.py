@@ -19,6 +19,8 @@ from app.api.schemas import (
     ItemOut,
     ManualLinkIn,
     ManualPriceIn,
+    MatchHealthItem,
+    MatchHealthPage,
     MatchQueueItem,
     MatchQueuePage,
     ProductPage,
@@ -37,7 +39,7 @@ from app.models import (
     ScrapeRun,
     Suggestion,
 )
-from app.services import audit, matches, schedule
+from app.services import audit, health, matches, schedule
 from app.services.suggest import pricing_settings, supersede_for
 
 router = APIRouter(tags=["market"])
@@ -325,6 +327,57 @@ async def reject_match(match_id: uuid.UUID, request: Request,
                        db: AsyncSession = Depends(get_db)):
     """Also undoes a confirmed or auto match that turned out wrong."""
     await matches.reject(db, match_id, p.user_id, client_ip(request))
+
+
+@router.post("/matches/{match_id}/keep", status_code=204)
+async def keep_match(match_id: uuid.UUID, request: Request,
+                     p: Principal = Depends(require("matches.decide")),
+                     db: AsyncSession = Depends(get_db)):
+    """The shop changed the item, and a person says it is still our product."""
+    await health.keep(db, match_id, p.user_id, client_ip(request))
+
+
+@router.get("/matches/health/count")
+async def match_health_count(_: Principal = Depends(require("matches.read")),
+                             db: AsyncSession = Depends(get_db)):
+    counts = dict((await db.execute(
+        select(ProductMatch.status, func.count()).where(ProductMatch.status.in_(health.HELD))
+        .group_by(ProductMatch.status))).all())
+    return {"changed": counts.get("changed", 0), "gone": counts.get("gone", 0)}
+
+
+@router.get("/matches/health", response_model=MatchHealthPage)
+async def match_health(status: str = Query(default="changed", pattern="^(changed|gone)$"),
+                       page: int = Query(default=1, ge=1),
+                       limit: int = Query(default=20, ge=1, le=100),
+                       _: Principal = Depends(require("matches.read")),
+                       db: AsyncSession = Depends(get_db)):
+    """Matches the shop changed or dropped, newest first."""
+    where = ProductMatch.status == status
+    total = await db.scalar(select(func.count()).select_from(ProductMatch).where(where))
+    rows = (await db.execute(
+        select(ProductMatch, Product, Competitor.name)
+        .join(Product, Product.product_id == ProductMatch.product_id)
+        .join(Competitor, Competitor.competitor_id == ProductMatch.competitor_id)
+        .where(where).order_by(ProductMatch.health_at.desc(), ProductMatch.match_id)
+        .offset((page - 1) * limit).limit(limit))).all()
+    our_prices = dict((await db.execute(
+        select(BranchProduct.product_id, func.max(BranchProduct.selling_price))
+        .where(BranchProduct.product_id.in_({prod.product_id for _, prod, _ in rows}),
+               BranchProduct.is_active.is_(True))
+        .group_by(BranchProduct.product_id))).all()) if rows else {}
+    items = []
+    for m, prod, cname in rows:
+        size = f"{prod.size_value.normalize():f} {prod.size_unit}" if prod.size_value else None
+        items.append(MatchHealthItem(
+            match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
+            product_size=size, product_image=prod.image_url,
+            our_price=our_prices.get(prod.product_id), competitor_id=m.competitor_id,
+            competitor=cname, status=m.status, was=m.held_status, method=m.method,
+            note=m.health_note, since=m.health_at, seen_name=m.seen_name,
+            item=ItemOut.model_validate(m.item)))
+    return MatchHealthPage(items=items, total=total, page=page,
+                           pages=max(1, -(-total // limit)))
 
 
 @router.post("/matches", status_code=201)
