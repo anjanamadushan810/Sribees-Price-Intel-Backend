@@ -93,6 +93,14 @@ def score(ours: Parsed, theirs: Parsed) -> float:
     # Owner (2026-10-29): brand, name and pack size (g / ml) must all agree.
     if not brand_ok(ours, theirs) or same_size(ours, theirs) is not True:
         return 0.0
+    return name_score(ours, theirs)
+
+
+def name_score(ours: Parsed, theirs: Parsed) -> float:
+    """The wording alone, before the brand and size rule: shown on a card a person added
+    by hand, never used to propose a match."""
+    if not ours.words or not theirs.words:
+        return 0.0
     matched = len(ours.words) - len(missing_words(ours, theirs))
     if not matched:
         return 0.0

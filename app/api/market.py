@@ -318,7 +318,10 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
             out.append(MatchQueueItem(
                 match_id=m.match_id, product_id=prod.product_id, product_name=prod.name,
                 product_size=size, competitor_id=m.competitor_id, competitor=cname,
-                score=m.score, item=ItemOut.model_validate(m.item),
+                # A card added by hand shows how alike the names read (stored as 0 before).
+                score=(manual_match.similarity(prod, m.item) if m.method == "manual"
+                       else m.score),
+                item=ItemOut.model_validate(m.item),
                 our_price=our_prices.get(prod.product_id), product_image=prod.image_url,
                 method=m.method,
                 flags=manual_match.flags(prod, m.item) if m.method == "manual" else []))
