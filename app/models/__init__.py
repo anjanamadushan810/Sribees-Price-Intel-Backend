@@ -194,6 +194,12 @@ class CompetitorItem(Base):
     last_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     last_mrp: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     in_stock: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Sold loose: the price is for size_value (owner 2026-11-04); a person may set that
+    # amount by hand, and then the nightly run leaves the size alone.
+    loose: Mapped[bool] = mapped_column(Boolean, default=False)
+    price_for_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id"))
+    price_for_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

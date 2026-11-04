@@ -3,6 +3,7 @@ sync -> collect -> candidate -> confirm -> cost -> suggestion -> accept -> Onlin
 
 import json
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal as D
 
 import httpx
@@ -17,6 +18,7 @@ from app.models import (
     Competitor,
     CompetitorItem,
     PriceObservation,
+    Product,
     ProductMatch,
     Suggestion,
     User,
@@ -672,3 +674,61 @@ async def test_a_shop_with_no_product_pages_is_matched_from_its_list(api):
     card = next(c for c in cards if c["match_id"] == match_id)
     assert card["method"] == "manual" and card["item"]["item_id"] == listed_id
     assert card["flags"] == []  # same brand, same 400 g
+
+
+async def test_a_bulk_price_is_compared_at_our_pack_size(api):
+    """Owner 2026-11-04: Nexmart sells Green Gram loose at Rs 97.50 per 100 g; against our
+    1 kg pack that is Rs 975. The amount is guessed from the shop and a person may set it
+    (Nexmart labels many 1 kg prices "per 100 g"); their choice survives the next run."""
+    from app.adapters.base import ListedItem
+    from app.services import health
+
+    admin = await _login(api, "super_admin")
+    ext = f"BULK-{uuid.uuid4().hex[:8]}"
+    async with get_sessionmaker()() as db, db.begin():
+        arpico = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "arpico"))
+        await db.execute(update(ProductMatch).where(
+            ProductMatch.product_id == uuid.UUID(BISCUIT), ProductMatch.competitor_id == arpico,
+            ProductMatch.status.in_(("auto", "confirmed"))).values(status="rejected"))
+        listed = ListedItem(external_id=ext, name="Maliban Chocolate Cream - Bulk",
+                            price=D("95.00"), pack="Bulk (per 100 g)", url="https://x")
+        ids = await collect._store(db, arpico, [listed], datetime.now(UTC))
+        item = await db.get(CompetitorItem, ids[ext])
+        assert item.loose and item.size_value == D("100.000")
+        m = ProductMatch(product_id=uuid.UUID(BISCUIT), item_id=item.item_id,
+                         competitor_id=arpico, status="confirmed", method="manual", score=1,
+                         decided_by=await db.scalar(select(User.user_id).limit(1)),
+                         decided_at=datetime.now(UTC), seen_name=item.name,
+                         seen_size_value=item.size_value, seen_size_unit=item.size_unit)
+        db.add(m)
+        await db.flush()
+        item_id, match_id = item.item_id, m.match_id
+
+    async def arpico_price():
+        rows = (await api.get("/products", params={"q": "Maliban"}, headers=admin)).json()
+        row = next(r for r in rows["items"] if r["product_id"] == BISCUIT)
+        return next(p for p in row["prices"] if p["item"]["item_id"] == str(item_id))
+
+    price = await arpico_price()
+    assert price["item"]["last_price"] == "95.00" and price["item"]["loose"] is True
+    assert price["compare_price"] == "380.00"  # 95 per 100 g, our pack is 400 g
+
+    # A pack is never set "per amount"; a bulk item is.
+    url = f"/items/{item_id}/price-for"
+    assert (await api.put(url, json={"size_value": "0", "size_unit": "g"},
+                          headers=admin)).status_code == 422
+    resp = await api.put(url, json={"size_value": "400", "size_unit": "g"}, headers=admin)
+    assert resp.status_code == 200 and resp.json()["price_for_by"]
+    assert (await arpico_price())["compare_price"] == "95.00"
+
+    async with get_sessionmaker()() as db, db.begin():
+        # The next run reads "per 100 g" again: the person's 400 g is kept.
+        await collect._store(db, arpico, [listed], datetime.now(UTC))
+        item = await db.get(CompetitorItem, item_id)
+        assert item.size_value == D("400.000") and item.loose
+        # Not a shop change, and a bulk item's size is no pack size: health stays quiet.
+        m = await db.get(ProductMatch, match_id)
+        prod = await db.get(Product, uuid.UUID(BISCUIT))
+        assert health.what_changed(m, item, prod) is None
+        await db.delete(m)

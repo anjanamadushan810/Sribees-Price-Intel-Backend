@@ -53,6 +53,12 @@ _PACK_KINDS = {
 # ("Baby Cheramy", not "Baby"; "Little Lion", "Sun Crush", "Mr Pop").
 _GENERIC_LEAD = {"baby", "little", "mr", "my", "sun", "the", "new", "lion", "red", "white"}
 _BARCODE = re.compile(r"^\d{8}$|^\d{12,14}$")
+# Sold loose, priced for an amount rather than a pack (owner 2026-11-04): "Green Gram - Bulk",
+# "Rice Nadu Bulk, Per kg", Nexmart's pack "Bulk (per 100 g)". Never "Loose Leaf Tea".
+_LOOSE = re.compile(
+    r"\bbulk\b|\bper(?:\s*\d+(?:\.\d+)?\s*|\s+)(?:kgs?|grams|gms?|g|ltr|lt|l|ml)\b",
+    re.IGNORECASE)  # "per" then a space or an amount: never the word "Perl"
+_PER_ONE = re.compile(r"\bper\s+(kgs?|ltr|lt|l)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,8 @@ class Parsed:
     # a brand written as one word or two ("Sun Crush" / "Suncrush").
     brand: str | None = None
     text: str = ""
+    # Sold loose: the price is for size_value (100 g, 1 kg), not for a pack.
+    loose: bool = False
 
 
 def _ascii(text: str) -> str:
@@ -98,8 +106,16 @@ def parse_size(text: str) -> tuple[Decimal | None, str | None]:
     return value.quantize(Decimal("0.001")), base
 
 
+def is_loose(name: str, pack: str | None = None) -> bool:
+    return bool(_LOOSE.search(f"{name} {pack or ''}"))
+
+
 def parse(name: str, pack: str | None = None) -> Parsed:
     size_value, size_unit = parse_size(f"{name} {pack or ''}")
+    loose = is_loose(name, pack)
+    if loose and size_value is None and (per := _PER_ONE.search(f"{name} {pack or ''}")):
+        size_value = Decimal("1000.000")  # "Per kg" / "per l": one of the base unit x 1000
+        size_unit = "g" if per.group(1).lower().startswith("k") else "ml"
     text = _SIZE.sub(" ", _ascii(name))
     raw = _WORD.findall(text)
     words = frozenset(w for w in raw if w not in _STOP and not (w.isdigit() and len(w) < 3))
@@ -109,7 +125,7 @@ def parse(name: str, pack: str | None = None) -> Parsed:
     if brand in _GENERIC_LEAD and len(named) > 1:
         brand = named[0] + named[1]
     return Parsed(words=words, size_value=size_value, size_unit=size_unit, packs=packs,
-                  brand=brand, text="".join(raw))
+                  brand=brand, text="".join(raw), loose=loose)
 
 
 def barcode_of(code: str | None) -> str | None:

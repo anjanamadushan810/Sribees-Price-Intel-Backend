@@ -5,7 +5,7 @@ everything else is only a *candidate* until the Price Checker confirms it once.
 A different pack size is never a candidate: 400 g and 200 g are different products.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from difflib import SequenceMatcher
 
@@ -26,6 +26,11 @@ TYPE_WORDS = {
     "sambol", "chips", "paste", "sauce", "oil", "juice", "cordial", "flakes", "curry",
     "noodles", "soup", "jam", "cubes", "pickle", "chutney", "seeds", "pieces", "powder",
 }
+# A loose (bulk) item is never auto-matched (owner 2026-11-04): at most this sure.
+LOOSE_MAX_SCORE = 0.9
+# Words that only say an item is sold loose; not part of what the product is.
+LOOSE_WORDS = frozenset({"bulk", "per", "kg", "kgs", "g", "gm", "gms", "grams", "l", "lt", "ltr",
+                         "ml"})
 # Prices that are placeholders on our side (loose staples added at Rs 1,000) prove nothing.
 PLACEHOLDER_PRICES = {Decimal("1000.00")}
 
@@ -85,11 +90,34 @@ def brand_ok(ours: Parsed, theirs: Parsed) -> bool:
     return False
 
 
+def loose_ok(ours: Parsed, theirs: Parsed) -> bool:
+    """The rule for a shop item sold loose (owner 2026-11-04): it is priced per amount, so
+    its size need not equal our pack, but a weight compares only with a weight and a volume
+    with a volume, and the names must hold the same words both ways (beyond "bulk", "per"
+    and units). A branded product of ours never meets an unbranded bulk item that way."""
+    if not theirs.loose or ours.size_unit not in ("g", "ml"):
+        return False
+    if theirs.size_unit is not None and theirs.size_unit != ours.size_unit:
+        return False
+    a = replace(ours, words=ours.words - LOOSE_WORDS)
+    b = replace(theirs, words=theirs.words - LOOSE_WORDS)
+    return bool(a.words) and not missing_words(a, b) and not missing_words(b, a)
+
+
+def rule_ok(ours: Parsed, theirs: Parsed) -> bool:
+    """The owner's brand + name + size rule, or the loose rule for a bulk item."""
+    if theirs.loose:
+        return loose_ok(ours, theirs)
+    return brand_ok(ours, theirs) and same_size(ours, theirs) is True
+
+
 def score(ours: Parsed, theirs: Parsed) -> float:
     """0..1: how much of our product's name the competitor's title covers,
     blended with overall overlap, then adjusted for pack size."""
     if not ours.words or not theirs.words:
         return 0.0
+    if theirs.loose:
+        return min(name_score(ours, theirs), LOOSE_MAX_SCORE) if loose_ok(ours, theirs) else 0.0
     # Owner (2026-10-29): brand, name and pack size (g / ml) must all agree.
     if not brand_ok(ours, theirs) or same_size(ours, theirs) is not True:
         return 0.0
@@ -125,7 +153,7 @@ def auto_pick(ours: Parsed, ranked: list[tuple[Candidate, Parsed]]) -> Candidate
     if not ranked:
         return None
     best, parsed = ranked[0]
-    if (best.score < AUTO_SCORE or same_size(ours, parsed) is not True
+    if (parsed.loose or best.score < AUTO_SCORE or same_size(ours, parsed) is not True
             or not brand_ok(ours, parsed)):
         return None
     # Both name what it comes in, and it differs (Box vs Pouch): a person decides.
@@ -151,7 +179,8 @@ def price_pick(ours: Parsed, our_name: str, our_price: Decimal | None,
         return None
     fits = []
     for i, (c, theirs, price) in enumerate(ranked):
-        if price is None or same_size(ours, theirs) is not True or not brand_ok(ours, theirs):
+        if (price is None or theirs.loose or same_size(ours, theirs) is not True
+                or not brand_ok(ours, theirs)):
             continue
         if ours.packs and theirs.packs and not ours.packs & theirs.packs:
             continue

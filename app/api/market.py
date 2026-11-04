@@ -25,6 +25,7 @@ from app.api.schemas import (
     MatchHealthPage,
     MatchQueueItem,
     MatchQueuePage,
+    PriceForIn,
     ProductPage,
     ProductRow,
     RunOut,
@@ -41,7 +42,7 @@ from app.models import (
     ScrapeRun,
     Suggestion,
 )
-from app.services import audit, health, manual_match, matches, schedule
+from app.services import audit, health, manual_match, matches, schedule, unitprice
 from app.services.suggest import pricing_settings, supersede_for
 
 router = APIRouter(tags=["market"])
@@ -119,6 +120,33 @@ async def search_items(q: str = Query(min_length=2, max_length=80),
     return list(await db.scalars(stmt))
 
 
+@router.put("/items/{item_id}/price-for", response_model=ItemOut)
+async def set_price_for(item_id: uuid.UUID, body: PriceForIn, request: Request,
+                        p: Principal = Depends(require("matches.decide")),
+                        db: AsyncSession = Depends(get_db)):
+    """The amount a loose (bulk) item's price is for, chosen by a person: kept over the
+    shop's own label from then on (owner 2026-11-04)."""
+    item = await db.get(CompetitorItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="item not found")
+    if not item.loose:
+        raise HTTPException(status_code=422, detail="only an item sold loose (bulk) is "
+                                                    "priced per amount")
+    before = {"size_value": str(item.size_value) if item.size_value is not None else None,
+              "size_unit": item.size_unit}
+    item.size_value, item.size_unit = body.size_value, body.size_unit
+    item.price_for_by, item.price_for_at = p.user_id, datetime.now(UTC)
+    # Match health compares sizes with the one seen at matching: this is no shop change.
+    for m in await db.scalars(select(ProductMatch).where(ProductMatch.item_id == item_id)):
+        m.seen_size_value, m.seen_size_unit = item.size_value, item.size_unit
+    await db.flush()
+    await audit.record(db, user_id=p.user_id, action="item.price_for", entity="item",
+                       entity_id=item.item_id, before=before,
+                       after={"size_value": str(body.size_value), "size_unit": body.size_unit,
+                              "item": item.name}, ip_address=client_ip(request))
+    return item
+
+
 # ---------------------------------------------------------------- products vs market
 async def stocked_branches(db: AsyncSession) -> list[Branch]:
     """Active branches, the one stocking the most products first: the natural default
@@ -167,18 +195,19 @@ async def _rows(db: AsyncSession, branch_id: uuid.UUID, product_ids: list[uuid.U
         for m in matches.get(prod.product_id, []):
             fresh = m.item.last_price is not None and m.item.in_stock and schedule.is_fresh(
                 prod.review_level, m.item.last_seen_at, now, stale)
+            compare = unitprice.for_item(m.item, prod)  # a bulk price at our pack size
             prices.append(CompetitorPrice(
                 competitor_id=m.competitor_id, competitor=names.get(m.competitor_id, "?"),
                 match_id=m.match_id, status=m.status, item=ItemOut.model_validate(m.item),
-                fresh=fresh))
+                fresh=fresh and compare is not None, compare_price=compare))
         live = [cp for cp in prices if cp.fresh]
-        cheapest = min(live, key=lambda cp: cp.item.last_price) if live else None
+        cheapest = min(live, key=lambda cp: cp.compare_price) if live else None
         ours = bp.selling_price if bp else None
         if cheapest is None or ours is None:
             position = "unknown"
-        elif ours < cheapest.item.last_price:
+        elif ours < cheapest.compare_price:
             position = "cheaper"
-        elif ours == cheapest.item.last_price:
+        elif ours == cheapest.compare_price:
             position = "equal"
         else:
             position = "dearer"
@@ -186,7 +215,7 @@ async def _rows(db: AsyncSession, branch_id: uuid.UUID, product_ids: list[uuid.U
             product_id=prod.product_id, name=prod.name, name_si=prod.name_si, sku=prod.sku,
             category=prod.category, image_url=prod.image_url, review_level=prod.review_level,
             mrp=prod.mrp, our_price=ours, cost_price=bp.cost_price if bp else None,
-            cheapest_price=cheapest.item.last_price if cheapest else None,
+            cheapest_price=cheapest.compare_price if cheapest else None,
             cheapest_competitor=cheapest.competitor if cheapest else None,
             cheapest_image=cheapest.item.image_url if cheapest else None,
             position=position, prices=sorted(prices, key=lambda cp: cp.competitor_id),
@@ -341,7 +370,8 @@ async def match_queue(competitor_id: int | None = None, page: int = Query(defaul
                 item=ItemOut.model_validate(m.item),
                 our_price=our_prices.get(prod.product_id), product_image=prod.image_url,
                 method=m.method,
-                flags=manual_match.flags(prod, m.item) if m.method == "manual" else []))
+                flags=manual_match.flags(prod, m.item) if m.method == "manual" else [],
+                compare_price=unitprice.for_item(m.item, prod)))
     return MatchQueuePage(items=out, total=total, page=page, pages=max(1, -(-total // limit)),
                           no_price_yet=no_price_yet)
 

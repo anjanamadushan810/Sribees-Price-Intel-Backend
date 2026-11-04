@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,7 +29,7 @@ from app.models import (
     ScrapeRun,
     SearchCheck,
 )
-from app.services import health, matcher, schedule
+from app.services import health, matcher, schedule, unitprice
 from app.services.normalize import Parsed, barcode_of, parse
 
 log = logging.getLogger("intel.collect")
@@ -48,14 +48,24 @@ async def _store(db: AsyncSession, competitor_id: int, items: list[ListedItem],
             "name": it.name[:300], "brand": (it.brand or None), "url": it.url,
             "barcode": barcode_of(it.barcode), "size_value": parsed.size_value,
             "size_unit": parsed.size_unit, "last_price": it.price, "last_mrp": it.mrp,
-            "in_stock": it.in_stock, "last_seen_at": now,
+            "in_stock": it.in_stock, "last_seen_at": now, "loose": parsed.loose,
         }
         if it.image:
             values["image_url"] = it.image
+        # A loose item's amount set by a person is kept (Nexmart labels 1 kg prices
+        # "per 100 g"); the shop's own size is used otherwise.
+        kept = CompetitorItem.price_for_by.is_not(None)
+        on_update = {**values,
+                     "size_value": case((kept, CompetitorItem.size_value),
+                                        else_=parsed.size_value),
+                     "size_unit": case((kept, CompetitorItem.size_unit),
+                                       else_=parsed.size_unit),
+                     "loose": case((kept, CompetitorItem.loose), else_=parsed.loose)}
         item_id = await db.scalar(
             insert(CompetitorItem)
             .values(competitor_id=competitor_id, external_id=it.external_id[:120], **values)
-            .on_conflict_do_update(index_elements=["competitor_id", "external_id"], set_=values)
+            .on_conflict_do_update(index_elements=["competitor_id", "external_id"],
+                                   set_=on_update)
             .returning(CompetitorItem.item_id)
         )
         ids[it.external_id] = item_id
@@ -93,8 +103,7 @@ async def propose_matches(db: AsyncSession, competitor_id: int,
     items = list(await db.scalars(
         select(CompetitorItem).where(CompetitorItem.competitor_id == competitor_id)))
     by_barcode = {i.barcode: i for i in items if i.barcode}
-    parsed_items = {i.item_id: _with_size(parse(i.name), i.size_value, i.size_unit)
-                    for i in items}
+    parsed_items = {i.item_id: item_parsed(i) for i in items}
     index: dict[str, list[uuid.UUID]] = defaultdict(list)
     for item_id, parsed in parsed_items.items():
         for word in parsed.words:
@@ -159,12 +168,15 @@ async def _price_context(db: AsyncSession, product_ids) -> tuple[dict, dict]:
         .where(BranchProduct.product_id.in_(ids), BranchProduct.is_active.is_(True))
         .group_by(BranchProduct.product_id))).all())
     peers: dict = defaultdict(list)
-    for pid, mid, price in (await db.execute(
-            select(ProductMatch.product_id, ProductMatch.match_id, CompetitorItem.last_price)
+    for pid, mid, item, prod in (await db.execute(
+            select(ProductMatch.product_id, ProductMatch.match_id, CompetitorItem, Product)
             .join(CompetitorItem, CompetitorItem.item_id == ProductMatch.item_id)
+            .join(Product, Product.product_id == ProductMatch.product_id)
             .where(ProductMatch.product_id.in_(ids), ProductMatch.status.in_(LIVE),
                    CompetitorItem.last_price.is_not(None)))).all():
-        peers[pid].append((mid, price))
+        price = unitprice.for_item(item, prod)  # a bulk price at our pack size
+        if price is not None:
+            peers[pid].append((mid, price))
     return ours, peers
 
 
@@ -182,7 +194,7 @@ async def price_sanity(db: AsyncSession, competitor_id: int | None = None) -> di
     counts = {"to_queue": 0, "removed": 0}
     for m, p in rows:
         ours = _with_size(parse(p.name), p.size_value, p.size_unit)
-        theirs = _with_size(parse(m.item.name), m.item.size_value, m.item.size_unit)
+        theirs = item_parsed(m.item)
         others = [price for mid, price in peers.get(p.product_id, []) if mid != m.match_id]
         if price_sane(ours_by_product.get(p.product_id), m.item.last_price, others):
             continue
@@ -227,7 +239,7 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
         prod = pairs[0][1]
         ours = _with_size(parse(prod.name), prod.size_value, prod.size_unit)
         ranked = [(matcher.Candidate(m, float(m.score)),
-                   _with_size(parse(m.item.name), m.item.size_value, m.item.size_unit))
+                   item_parsed(m.item))
                   for m, _ in pairs]
         sure = matcher.auto_pick(ours, ranked) or matcher.price_pick(
             ours, prod.name, our_prices.get(prod.product_id),
@@ -248,10 +260,16 @@ async def _promote_sure_candidates(db: AsyncSession, competitor_id: int,
     return promoted
 
 
-def _with_size(parsed: Parsed, size_value, size_unit) -> Parsed:
+def _with_size(parsed: Parsed, size_value, size_unit, loose: bool | None = None) -> Parsed:
     """The title's words, brand and pack kind with the size we stored (it may come from
-    a separate pack field or Online's weight, not the title)."""
-    return replace(parsed, size_value=size_value, size_unit=size_unit)
+    a separate pack field or Online's weight, not the title), and for a shop item whether
+    it is sold loose (the pack text may say so where the title does not)."""
+    parsed = replace(parsed, size_value=size_value, size_unit=size_unit)
+    return parsed if loose is None else replace(parsed, loose=loose)
+
+
+def item_parsed(item: CompetitorItem) -> Parsed:
+    return _with_size(parse(item.name), item.size_value, item.size_unit, item.loose)
 
 
 def search_query(name: str) -> str:

@@ -82,7 +82,8 @@ async def find_item(db: AsyncSession, competitor: Competitor, url: str,
 def _parsed(product: Product, item: CompetitorItem):
     return (replace(parse(product.name), size_value=product.size_value,
                     size_unit=product.size_unit),
-            replace(parse(item.name), size_value=item.size_value, size_unit=item.size_unit))
+            replace(parse(item.name), size_value=item.size_value, size_unit=item.size_unit,
+                    loose=item.loose))
 
 
 def similarity(product: Product, item: CompetitorItem) -> float:
@@ -94,6 +95,9 @@ def flags(product: Product, item: CompetitorItem) -> list[str]:
     """What a person should look at twice: the owner's brand + size rule, shown as a quiet
     note on the card (owner 2026-11-03: a person may still confirm)."""
     ours, theirs = _parsed(product, item)
+    if theirs.loose:
+        # Priced per amount: its size is not a pack size (owner 2026-11-04).
+        return [] if matcher.loose_ok(ours, theirs) else ["name differs"]
     out = []
     size = matcher.same_size(ours, theirs)
     if size is False:
