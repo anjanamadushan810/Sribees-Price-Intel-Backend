@@ -53,8 +53,10 @@ def decide(
     cheapest = min(plausible, key=lambda o: (o.price, o.competitor_id))
     if current <= cheapest.price:
         return Verdict("cheaper", cheapest=cheapest)
-    if finance_floor is not None:
+    if finance_floor is not None and finance_floor > 0:
         floor = finance_floor.quantize(RUPEE, rounding=ROUND_CEILING)
+        if cost is not None:  # never below what the manager knows it costs either
+            floor = max(floor, floor_price(cost, min_margin_pct))
     elif cost is None:
         return Verdict("cost_missing", cheapest=cheapest)
     else:

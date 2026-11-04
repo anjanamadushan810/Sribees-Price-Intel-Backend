@@ -394,6 +394,14 @@ def test_finance_floor_wins_over_the_typed_cost():
     v = pricing.decide(current=D("520"), cost=D("400"), offers=_offers("450"),
                        min_margin_pct=D("5"), finance_floor=D("470.20"))
     assert (v.outcome, v.suggested_price, v.floor_price) == ("suggest", D("471"), D("471"))
+    # A Finance floor below the typed cost + margin never lowers it (review 2026-11-05).
+    v = pricing.decide(current=D("520"), cost=D("460"), offers=_offers("450"),
+                       min_margin_pct=D("5"), finance_floor=D("300"))
+    assert (v.outcome, v.suggested_price, v.reason) == ("suggest", D("483"), "floor")
+    # A zero floor is no floor.
+    v = pricing.decide(current=D("520"), cost=None, offers=_offers("450"),
+                       min_margin_pct=D("5"), finance_floor=D("0"))
+    assert v.outcome == "cost_missing"
     # No typed cost is needed when Finance has a floor.
     v = pricing.decide(current=D("520"), cost=None, offers=_offers("450"),
                        min_margin_pct=D("5"), finance_floor=D("430"))
