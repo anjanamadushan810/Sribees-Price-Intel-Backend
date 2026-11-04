@@ -387,3 +387,18 @@ def test_a_word_starting_with_per_is_not_a_price_per_amount():
     assert not parse("Perl Honey Dates Drink 250Ml").loose
     assert not parse("Perfume Spray 100ml").loose
     assert parse("Sugar per 1kg").loose and parse("Sugar per100g").loose
+
+
+def test_finance_floor_wins_over_the_typed_cost():
+    # Finance's minimum (cost + transport + bags + margin + cashback + referral) is the floor.
+    v = pricing.decide(current=D("520"), cost=D("400"), offers=_offers("450"),
+                       min_margin_pct=D("5"), finance_floor=D("470.20"))
+    assert (v.outcome, v.suggested_price, v.floor_price) == ("suggest", D("471"), D("471"))
+    # No typed cost is needed when Finance has a floor.
+    v = pricing.decide(current=D("520"), cost=None, offers=_offers("450"),
+                       min_margin_pct=D("5"), finance_floor=D("430"))
+    assert (v.outcome, v.suggested_price, v.reason) == ("suggest", D("450"), "match_cheapest")
+    # At or above the current price: hold.
+    v = pricing.decide(current=D("500"), cost=None, offers=_offers("450"),
+                       min_margin_pct=D("5"), finance_floor=D("510"))
+    assert v.outcome == "at_floor"

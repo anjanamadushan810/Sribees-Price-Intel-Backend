@@ -96,6 +96,12 @@ class OnlineClient:
                 return row
         return None
 
+    async def price_floors(self, branch_id: str, product_ids: list[str]) -> dict[str, list[dict]]:
+        """Sribees Finance's minimum prices for these products in one branch (at most 200)."""
+        data = await self._call("GET", "/api/v1/admin/inventory/price-floors", params={
+            "branch_id": branch_id, "product_ids": ",".join(product_ids)})
+        return data["data"]["floors"]
+
     async def set_price(self, inventory_id: str, body: dict) -> dict:
         data = await self._call("PUT", f"/api/v1/admin/inventory/{inventory_id}", json=body)
         return data["data"]

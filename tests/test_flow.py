@@ -42,6 +42,8 @@ class FakeOnline:
 
     def __init__(self):
         self.puts: list[tuple[str, dict]] = []
+        # Sribees Finance's minimum prices, as Online serves them: {(branch, product): price}
+        self.floors: dict[tuple[str, str], str] = {}
         self.rows = {
             (MATUGAMA, BISCUIT): {"branch_price": None, "global_price": 520.0,
                                   "discount_percentage": None, "is_on_sale": False},
@@ -76,6 +78,13 @@ class FakeOnline:
                  "is_active": True},
                 {"product_id": SOAP, "name": "Sunlight Soap", "sku": "4006381333931",
                  "weight": "0.11", "weight_unit": "kg", "is_active": True}]}})
+        if path.endswith("/admin/inventory/price-floors"):
+            branch = request.url.params["branch_id"]
+            ids = request.url.params["product_ids"].split(",")
+            return httpx.Response(200, json={"data": {"branch_id": branch, "floors": {
+                pid: [{"product_id": pid, "variant_id": None,
+                       "min_price": self.floors[(branch, pid)]}]
+                for pid in ids if (branch, pid) in self.floors}}})
         if path.endswith("/admin/inventory") and request.method == "GET":
             branch = request.url.params.get("branch_id")
             items = [self._inv(b, p) for (b, p) in self.rows if branch in (None, b)]
@@ -167,7 +176,7 @@ async def test_sync_then_collect_proposes_only_same_size(online):
     async with OnlineClient(transport=httpx.MockTransport(online)) as client, \
             get_sessionmaker()() as db, db.begin():
         counts = await sync(db, client)
-    assert counts == {"branches": 2, "products": 2, "branch_products": 2}
+    assert counts == {"branches": 2, "products": 2, "branch_products": 2, "finance_floors": 0}
 
     async with get_sessionmaker()() as db:
         nexmart = await db.scalar(select(Competitor).where(Competitor.code == "nexmart"))
@@ -732,3 +741,29 @@ async def test_a_bulk_price_is_compared_at_our_pack_size(api):
         prod = await db.get(Product, uuid.UUID(BISCUIT))
         assert health.what_changed(m, item, prod) is None
         await db.delete(m)
+
+
+async def test_finance_minimum_price_is_the_floor(online):
+    """Sribees Finance's minimum price is read on every sync and the rule never goes
+    below it, even with no hand-typed cost; when Finance drops it, it is cleared."""
+    from app.services import pricing
+
+    online.floors[(MATUGAMA, BISCUIT)] = "505.00"
+    async with OnlineClient(transport=httpx.MockTransport(online)) as client, \
+            get_sessionmaker()() as db, db.begin():
+        counts = await sync(db, client)
+    assert counts["finance_floors"] == 1
+    async with get_sessionmaker()() as db:
+        bp = await db.get(BranchProduct, (uuid.UUID(MATUGAMA), uuid.UUID(BISCUIT)))
+        assert bp.finance_min_price == D("505.00")
+    v = pricing.decide(current=D("520"), cost=None, offers=[pricing.Offer(1, D("480.50"))],
+                       min_margin_pct=D("5"), finance_floor=bp.finance_min_price)
+    assert (v.outcome, v.suggested_price, v.reason) == ("suggest", D("505"), "floor")
+
+    online.floors.clear()
+    async with OnlineClient(transport=httpx.MockTransport(online)) as client, \
+            get_sessionmaker()() as db, db.begin():
+        await sync(db, client)
+    async with get_sessionmaker()() as db:
+        bp = await db.get(BranchProduct, (uuid.UUID(MATUGAMA), uuid.UUID(BISCUIT)))
+        assert bp.finance_min_price is None

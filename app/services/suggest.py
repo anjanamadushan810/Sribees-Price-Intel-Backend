@@ -53,7 +53,8 @@ async def refresh(db: AsyncSession) -> dict:
         BranchProduct.is_active.is_(True), BranchProduct.selling_price.is_not(None)))
     for bp in rows:
         verdict = pricing.decide(current=bp.selling_price, cost=bp.cost_price,
-                                 offers=offers.get(bp.product_id, []), min_margin_pct=margin)
+                                 offers=offers.get(bp.product_id, []), min_margin_pct=margin,
+                                 finance_floor=bp.finance_min_price)
         counts[verdict.outcome] += 1
         old = pending.get((bp.branch_id, bp.product_id))
         if verdict.outcome != "suggest":

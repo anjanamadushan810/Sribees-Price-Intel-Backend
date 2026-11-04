@@ -1,5 +1,9 @@
 """The owner's price rule (VISION.md Q5): match the cheapest competitor, but never
-go below cost + min_margin_pct. Never suggests a rise; never suggests without a cost.
+go below the floor. Never suggests a rise; never suggests without a floor.
+
+The floor is Sribees Finance's minimum price when it has one (owner 2026-11-04: costs
+live in Finance -- latest purchase cost with transport, bags and labels, margin,
+cashback and referral); otherwise the hand-typed cost + min_margin_pct.
 """
 
 from dataclasses import dataclass
@@ -39,6 +43,7 @@ def decide(
     cost: Decimal | None,
     offers: list[Offer],
     min_margin_pct: Decimal,
+    finance_floor: Decimal | None = None,
 ) -> Verdict:
     if not offers:
         return Verdict("no_data")
@@ -48,10 +53,12 @@ def decide(
     cheapest = min(plausible, key=lambda o: (o.price, o.competitor_id))
     if current <= cheapest.price:
         return Verdict("cheaper", cheapest=cheapest)
-    if cost is None:
+    if finance_floor is not None:
+        floor = finance_floor.quantize(RUPEE, rounding=ROUND_CEILING)
+    elif cost is None:
         return Verdict("cost_missing", cheapest=cheapest)
-
-    floor = floor_price(cost, min_margin_pct)
+    else:
+        floor = floor_price(cost, min_margin_pct)
     target = cheapest.price.quantize(RUPEE, rounding=ROUND_FLOOR)
     reason = "match_cheapest"
     if target < floor:
