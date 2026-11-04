@@ -8,7 +8,7 @@ from decimal import Decimal as D
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, inspect, select, text, update
 
 from app.core.db import Base, get_engine, get_sessionmaker
 from app.core.security import hash_password
@@ -621,3 +621,54 @@ async def test_a_pasted_shop_page_becomes_a_card_in_the_queue(api):
         with pytest.raises(IntelError, match="Nexmart"):
             await manual_match.find_item(db, await db.get(Competitor, nexmart),
                                          "https://nexmart.lk/item/77")
+
+
+async def test_a_shop_with_no_product_pages_is_matched_from_its_list(api):
+    """Nexmart shows products in a pop-up, so there is no link to paste: the item is found
+    by name in the list the nightly run stored and added as a queue card (owner 2026-11-04)."""
+    admin = await _login(api, "super_admin")
+    async with get_sessionmaker()() as db, db.begin():
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+        spar = await db.scalar(select(Competitor.competitor_id).where(Competitor.code == "spar"))
+        listed = CompetitorItem(competitor_id=nexmart, external_id=f"BISC-{uuid.uuid4().hex[:8]}",
+                                name="MALIBAN BISCUIT CHOCOLATE CREAM - 400 g", brand="Maliban",
+                                size_value=D("400"), size_unit="g", url="https://nexmart.lk",
+                                last_price=D("370.00"), last_mrp=D("480.00"), in_stock=True)
+        elsewhere = CompetitorItem(competitor_id=spar, external_id=f"spar-{uuid.uuid4().hex[:8]}",
+                                   name="Maliban Chocolate Cream 400g", last_price=D("380.00"))
+        db.add_all([listed, elsewhere])
+        # Earlier tests may have matched the biscuit at Nexmart already.
+        await db.execute(update(ProductMatch).where(
+            ProductMatch.product_id == uuid.UUID(BISCUIT), ProductMatch.competitor_id == nexmart,
+            ProductMatch.status.in_(("auto", "confirmed"))).values(status="rejected"))
+        await db.flush()
+        listed_id, elsewhere_id = str(listed.item_id), str(elsewhere.item_id)
+
+    # '110g' finds '110 g'; a LIKE wildcard in the words is only a letter.
+    found = (await api.get("/items", headers=admin, params={
+        "q": "maliban chocolate 400g", "competitor_id": nexmart})).json()
+    assert listed_id in [i["item_id"] for i in found]
+    assert elsewhere_id not in [i["item_id"] for i in found]
+    assert (await api.get("/items", headers=admin, params={"q": "mali%ban"})).json() == []
+
+    # Exactly one of link or listed item.
+    for body in ({}, {"url": "https://nexmart.lk/x", "item_id": listed_id}):
+        resp = await api.post("/matches/manual", headers=admin, json={
+            "product_id": BISCUIT, "competitor_id": nexmart, **body})
+        assert resp.status_code == 422
+
+    # An item of another shop is refused.
+    resp = await api.post("/matches/manual", headers=admin, json={
+        "product_id": BISCUIT, "competitor_id": nexmart, "item_id": elsewhere_id})
+    assert resp.status_code == 404
+
+    resp = await api.post("/matches/manual", headers=admin, json={
+        "product_id": BISCUIT, "competitor_id": nexmart, "item_id": listed_id})
+    assert resp.status_code == 201
+    match_id = resp.json()["match_id"]
+    cards = (await api.get("/matches/queue", headers=admin,
+                           params={"competitor_id": nexmart})).json()["items"]
+    card = next(c for c in cards if c["match_id"] == match_id)
+    assert card["method"] == "manual" and card["item"]["item_id"] == listed_id
+    assert card["flags"] == []  # same brand, same 400 g

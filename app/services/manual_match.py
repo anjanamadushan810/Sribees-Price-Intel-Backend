@@ -105,15 +105,30 @@ def flags(product: Product, item: CompetitorItem) -> list[str]:
     return out
 
 
-async def add(db: AsyncSession, product_id: uuid.UUID, competitor_id: int, url: str,
-              user_id: uuid.UUID, ip: str | None, transport=None) -> ProductMatch:
+async def listed_item(db: AsyncSession, competitor: Competitor,
+                      item_id: uuid.UUID) -> CompetitorItem:
+    """An item the nightly run already stored, picked from the shop's list (no page link)."""
+    item = await db.get(CompetitorItem, item_id)
+    if item is None or item.competitor_id != competitor.competitor_id:
+        raise NotFound(f"that item is not in {competitor.name}'s list")
+    return item
+
+
+async def add(db: AsyncSession, product_id: uuid.UUID, competitor_id: int, url: str | None,
+              user_id: uuid.UUID, ip: str | None, transport=None,
+              item_id: uuid.UUID | None = None) -> ProductMatch:
     product = await db.get(Product, product_id)
     competitor = await db.get(Competitor, competitor_id)
     if product is None or not product.is_active or competitor is None:
         raise NotFound("product or shop not found")
     if competitor.kind != "scraped" or not competitor.base_url:
         raise IntelError("this shop's prices are entered by hand (Shelf prices)")
-    item = await find_item(db, competitor, url, transport)
+    if item_id is not None:
+        item = await listed_item(db, competitor, item_id)
+    elif url:
+        item = await find_item(db, competitor, url, transport)
+    else:
+        raise IntelError("give the shop's page link or pick an item from its list")
     live = await db.scalar(select(ProductMatch).where(
         ProductMatch.product_id == product_id, ProductMatch.competitor_id == competitor_id,
         ProductMatch.status.in_(LIVE)))
@@ -136,6 +151,8 @@ async def add(db: AsyncSession, product_id: uuid.UUID, competitor_id: int, url: 
     await db.flush()
     await audit.record(db, user_id=user_id, action="match.add", entity="match",
                        entity_id=m.match_id, after={"product_id": str(product_id),
-                                                    "item": item.name, "url": url[:300]},
+                                                    "item": item.name,
+                                                    "url": (url or "")[:300] or None,
+                                                    "from_list": item_id is not None},
                        ip_address=ip)
     return m

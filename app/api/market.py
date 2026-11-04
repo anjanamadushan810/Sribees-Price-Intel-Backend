@@ -1,11 +1,12 @@
 """Competitors, our products against their prices, the match queue, manual prices, costs."""
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -88,15 +89,31 @@ async def list_runs(competitor_id: int, limit: int = Query(default=30, le=200),
         .order_by(ScrapeRun.run_id.desc()).limit(limit)))
 
 
+def item_words(q: str) -> list[str]:
+    """Search words for a shop's list: LIKE wildcards escaped, a size's unit dropped."""
+    out = []
+    for word in q.lower().split():
+        word = re.sub(r"^(\d+(?:\.\d+)?)[a-z]+$", r"\1", word)
+        word = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        if word and word not in out:
+            out.append(word)
+    return out[:6]
+
+
 @router.get("/items", response_model=list[ItemOut])
 async def search_items(q: str = Query(min_length=2, max_length=80),
                        competitor_id: int | None = None,
                        _: Principal = Depends(require("matches.read")),
                        db: AsyncSession = Depends(get_db)):
-    """Free search in competitors' lists, for linking a product by hand."""
-    stmt = select(CompetitorItem).order_by(CompetitorItem.name).limit(50)
-    for word in q.split()[:5]:
-        stmt = stmt.where(CompetitorItem.name.ilike(f"%{word}%"))
+    """Free search in competitors' lists, for linking a product by hand (also how a shop
+    with no page per product, like Nexmart, is matched by hand). Every word must appear in
+    the name or brand; '400g' looks for '400' since shops write '400 g' or '400g'."""
+    stmt = (select(CompetitorItem)
+            .order_by(CompetitorItem.in_stock.desc(), CompetitorItem.name).limit(50))
+    for word in item_words(q):
+        like = f"%{word}%"
+        stmt = stmt.where(or_(CompetitorItem.name.ilike(like, escape="\\"),
+                              CompetitorItem.brand.ilike(like, escape="\\")))
     if competitor_id:
         stmt = stmt.where(CompetitorItem.competitor_id == competitor_id)
     return list(await db.scalars(stmt))
@@ -401,7 +418,7 @@ async def add_manual_match(body: ManualMatchIn, request: Request,
                            db: AsyncSession = Depends(get_db)):
     """A shop's product page, pasted by a person, becomes a card in the Match Queue."""
     m = await manual_match.add(db, body.product_id, body.competitor_id, body.url,
-                               p.user_id, client_ip(request))
+                               p.user_id, client_ip(request), item_id=body.item_id)
     return {"match_id": str(m.match_id)}
 
 
