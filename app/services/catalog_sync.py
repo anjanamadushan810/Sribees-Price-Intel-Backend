@@ -115,6 +115,23 @@ async def sync(db: AsyncSession, online: OnlineClient) -> dict:
             branch_id=uuid.UUID(row["branch_id"]), product_id=pid, **values,
         ).on_conflict_do_update(index_elements=["branch_id", "product_id"], set_=values))
         counts["branch_products"] += 1
+    # A branch row Online no longer lists -- its product deleted (Online deletes outright)
+    # or taken off that branch -- is no longer sold there: no comparison, no suggestion.
+    # Kept, not deleted, so a product that comes back picks up where it left off.
+    # A product Online no longer lists takes its rows with it whenever Online did list
+    # products; a row merely missing from the inventory only when the inventory came back
+    # at all (an empty answer is more likely a fault than every row gone).
+    gone = 0
+    if seen:
+        gone += (await db.execute(update(BranchProduct).where(
+            BranchProduct.is_active.is_(True), BranchProduct.product_id.not_in(seen),
+        ).values(is_active=False))).rowcount or 0
+    if counts["branch_products"]:
+        gone += (await db.execute(update(BranchProduct).where(
+            BranchProduct.is_active.is_(True), BranchProduct.synced_at < now,
+        ).values(is_active=False))).rowcount or 0
+    if gone:
+        counts["branch_products_gone"] = gone
     counts["finance_floors"] = await _finance_floors(db, online, now)
     return counts
 

@@ -767,3 +767,60 @@ async def test_finance_minimum_price_is_the_floor(online):
     async with get_sessionmaker()() as db:
         bp = await db.get(BranchProduct, (uuid.UUID(MATUGAMA), uuid.UUID(BISCUIT)))
         assert bp.finance_min_price is None
+
+
+async def test_a_product_deleted_on_online_stops_being_priced(online):
+    """Online deletes a product outright. Price Intel keeps its history but stops pricing
+    it: its branch rows go inactive, a pending suggestion is withdrawn (accepting it could
+    only fail), and Match Health leaves its matches be. Back on Online, it carries on."""
+    from app.models import Suggestion
+
+    class Deleted(FakeOnline):
+        def __init__(self, base):
+            self.__dict__ = base.__dict__  # same prices and floors as the module's Online
+
+        def __call__(self, request):
+            resp = super().__call__(request)
+            data = resp.json().get("data") if resp.status_code == 200 else None
+            if not isinstance(data, dict):
+                return resp
+            for key in ("products", "items"):
+                if key in data:
+                    data[key] = [r for r in data[key] if r["product_id"] != BISCUIT]
+            return httpx.Response(200, json={"data": data})
+
+    async def run_sync(source):
+        async with OnlineClient(transport=httpx.MockTransport(source)) as client, \
+                get_sessionmaker()() as db, db.begin():
+            return await sync(db, client)
+
+    await run_sync(online)
+    async with get_sessionmaker()() as db, db.begin():
+        nexmart = await db.scalar(select(Competitor.competitor_id).where(
+            Competitor.code == "nexmart"))
+        await db.execute(update(Suggestion).where(Suggestion.status == "pending")
+                         .values(status="superseded"))
+        db.add(Suggestion(branch_id=uuid.UUID(MATUGAMA), product_id=uuid.UUID(BISCUIT),
+                          current_price=D("520"), suggested_price=D("500"),
+                          cheapest_price=D("480.50"), cheapest_competitor_id=nexmart,
+                          cost_price=D("400"), floor_price=D("420"), reason="match_cheapest"))
+
+    counts = await run_sync(Deleted(online))
+    assert counts["branch_products_gone"] == 2  # Matugama and Other
+    async with get_sessionmaker()() as db, db.begin():
+        prod = await db.get(Product, uuid.UUID(BISCUIT))
+        assert not prod.is_active
+        for branch in (MATUGAMA, OTHER):
+            bp = await db.get(BranchProduct, (uuid.UUID(branch), uuid.UUID(BISCUIT)))
+            assert not bp.is_active and bp.selling_price is not None  # kept, not deleted
+        await suggest.refresh(db)
+        left = await db.scalar(select(func.count()).select_from(Suggestion).where(
+            Suggestion.product_id == uuid.UUID(BISCUIT), Suggestion.status == "pending"))
+        assert left == 0
+
+    # Back on Online (the same product): priced again.
+    await run_sync(online)
+    async with get_sessionmaker()() as db:
+        assert (await db.get(Product, uuid.UUID(BISCUIT))).is_active
+        bp = await db.get(BranchProduct, (uuid.UUID(MATUGAMA), uuid.UUID(BISCUIT)))
+        assert bp.is_active

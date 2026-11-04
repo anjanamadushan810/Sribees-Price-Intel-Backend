@@ -87,7 +87,8 @@ async def judge(db: AsyncSession, competitor_id: int, started: datetime, *,
     rows = (await db.execute(
         select(ProductMatch, Product).join(Product, Product.product_id == ProductMatch.product_id)
         .where(ProductMatch.competitor_id == competitor_id,
-               ProductMatch.status.in_(LIVE + ("gone",))))).all()
+               ProductMatch.status.in_(LIVE + ("gone",)),
+               Product.is_active.is_(True)))).all()  # a deleted product of ours: left be
 
     if expect_all:
         listed = await db.scalar(select(func.count()).select_from(CompetitorItem).where(
