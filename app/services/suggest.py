@@ -49,11 +49,17 @@ async def refresh(db: AsyncSession) -> dict:
     counts = {"suggest": 0, "cheaper": 0, "cost_missing": 0, "at_floor": 0, "no_data": 0,
               "check": 0, "new": 0}
 
-    rows = await db.scalars(select(BranchProduct).where(
-        BranchProduct.is_active.is_(True), BranchProduct.selling_price.is_not(None)))
+    rows = await db.scalars(
+        select(BranchProduct)
+        .join(Product, Product.product_id == BranchProduct.product_id)
+        .where(BranchProduct.is_active.is_(True), BranchProduct.selling_price.is_not(None),
+               Product.is_active.is_(True)))
+    judged: set = set()
     for bp in rows:
+        judged.add((bp.branch_id, bp.product_id))
         verdict = pricing.decide(current=bp.selling_price, cost=bp.cost_price,
-                                 offers=offers.get(bp.product_id, []), min_margin_pct=margin)
+                                 offers=offers.get(bp.product_id, []), min_margin_pct=margin,
+                                 finance_floor=bp.finance_min_price)
         counts[verdict.outcome] += 1
         old = pending.get((bp.branch_id, bp.product_id))
         if verdict.outcome != "suggest":
@@ -73,6 +79,11 @@ async def refresh(db: AsyncSession) -> dict:
             floor_price=verdict.floor_price, reason=verdict.reason,
         ))
         counts["new"] += 1
+    # A pending suggestion for a product no longer sold (deleted on Online, off the branch)
+    # could only fail when accepted.
+    for key, old in pending.items():
+        if key not in judged:
+            old.status = "superseded"
     await db.flush()
     return counts
 
