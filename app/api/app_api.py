@@ -21,12 +21,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import client_ip
-from app.api.schemas import ItemOut
+from app.api.schemas import ItemOut, Money
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_password
 from app.models import Competitor, Product, ProductMatch, User
-from app.services import audit, matches, schedule
+from app.services import audit, matches, schedule, unitprice
 from app.services.suggest import pricing_settings
 
 router = APIRouter(prefix="/app", tags=["price app"])
@@ -104,6 +104,7 @@ class AppCandidate(BaseModel):
     match_id: uuid.UUID
     score: float
     item: ItemOut
+    compare_price: Money | None = None  # their price at our pack size (bulk scaled)
 
 
 class AppShop(BaseModel):
@@ -140,16 +141,20 @@ async def _product_view(db: AsyncSession, product_id: uuid.UUID) -> AppProduct:
         live = next((m for m in mine if m.status in matches.LIVE), None)
         if live is None and not mine and c.kind == "manual":
             continue  # nothing to show or decide for a hand-entered shop yet
-        fresh = bool(live and live.item.last_price is not None and live.item.in_stock
+        fresh = bool(live and unitprice.for_item(live.item, prod) is not None
+                     and live.item.in_stock
                      and schedule.is_fresh(prod.review_level, live.item.last_seen_at, now, stale))
         out.append(AppShop(
             competitor_id=cid, competitor=c.name,
             matched=AppCandidate(match_id=live.match_id, score=float(live.score),
-                                 item=ItemOut.model_validate(live.item)) if live else None,
+                                 item=ItemOut.model_validate(live.item),
+                                 compare_price=unitprice.for_item(live.item, prod))
+            if live else None,
             matched_by=live.status if live else None, fresh=fresh,
             candidates=[] if live else [
                 AppCandidate(match_id=m.match_id, score=float(m.score),
-                             item=ItemOut.model_validate(m.item))
+                             item=ItemOut.model_validate(m.item),
+                             compare_price=unitprice.for_item(m.item, prod))
                 for m in mine if m.status == "candidate"],
         ))
     return AppProduct(product_id=prod.product_id, name=prod.name, shops=out)

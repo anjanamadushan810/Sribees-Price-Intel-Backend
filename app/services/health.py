@@ -61,8 +61,9 @@ def what_changed(m: ProductMatch, item: CompetitorItem, product: Product) -> str
         return None
     ours = replace(parse(product.name), size_value=product.size_value,
                    size_unit=product.size_unit)
-    theirs = replace(parse(item.name), size_value=item.size_value, size_unit=item.size_unit)
-    if not matcher.brand_ok(ours, theirs) or matcher.same_size(ours, theirs) is not True:
+    theirs = replace(parse(item.name), size_value=item.size_value, size_unit=item.size_unit,
+                     loose=item.loose)
+    if not matcher.rule_ok(ours, theirs):
         return f"title '{m.seen_name}' -> '{item.name}'"[:300]
     return None
 

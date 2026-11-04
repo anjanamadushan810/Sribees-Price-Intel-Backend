@@ -335,3 +335,55 @@ def test_price_sanity_trusts_shops_that_agree_with_each_other():
     assert price_sane(D("390"), D("990"), [D("990"), D("990")])    # our Baygon price is off
     assert not price_sane(D("60"), D("1190"), [D("65")])           # one shop is the odd one
     assert price_sane(D("1000"), D("200"), [])                     # our placeholder
+
+
+# ---------------------------------------------------------------- bulk (owner 2026-11-04)
+def test_bulk_items_are_read_as_sold_loose():
+    green = parse("Green Gram - Bulk", "Bulk (per 100 g)")
+    assert green.loose and (green.size_value, green.size_unit) == (D("100.000"), "g")
+    per_kg = parse("Rice Nadu Bulk, Per kg")
+    assert per_kg.loose and (per_kg.size_value, per_kg.size_unit) == (D("1000.000"), "g")
+    assert parse("DHAL Bulk").loose and parse("DHAL Bulk").size_value is None
+    # "Loose" alone is a kind of product (loose leaf tea), not a way of selling it.
+    assert not parse("Dilmah Premium Loose Leaf Tea Bopf 100G").loose
+    assert not parse("Green Gram 1kg").loose
+
+
+def test_a_bulk_item_is_only_ever_a_candidate():
+    ours = parse("Green Gram 1kg")
+    bulk = parse("Green Gram - Bulk", "Bulk (per 100 g)")
+    assert matcher.rule_ok(ours, bulk)
+    assert 0.6 <= matcher.score(ours, bulk) <= matcher.LOOSE_MAX_SCORE < matcher.AUTO_SCORE
+    same_kg = parse("Green Gram Bulk, Per kg")
+    ranked = [(matcher.Candidate("x", 0.99), same_kg)]
+    assert matcher.auto_pick(ours, ranked) is None
+    assert matcher.price_pick(ours, "Green Gram 1kg", D("850"),
+                              [(matcher.Candidate("x", 0.99), same_kg, D("850"))]) is None
+
+
+def test_a_branded_product_never_meets_an_unbranded_bulk_item():
+    bulk = parse("Green Gram - Bulk", "Bulk (per 100 g)")
+    assert matcher.score(parse("Sethum Green Gram 1kg"), bulk) == 0
+    assert matcher.score(parse("Red Raw Rice 1kg"), parse("Red Raw Rice Local - Bulk")) == 0
+    # A weight is never compared with a volume.
+    assert matcher.score(parse("Coconut Oil 1L"), parse("Coconut Oil - Bulk", "per 100 g")) == 0
+
+
+def test_a_bulk_price_is_scaled_to_our_pack():
+    from app.services.unitprice import comparable
+
+    def at(price, size, unit, our_size, our_unit, loose=True):
+        return comparable(D(price), loose=loose, size_value=size and D(size), size_unit=unit,
+                          our_size=our_size and D(our_size), our_unit=our_unit)
+
+    assert at("97.50", "100", "g", "1000", "g") == D("975.00")
+    assert at("288", None, None, "500", "g") == D("144.00")  # no amount: per 1 kg
+    assert at("97.50", "100", "g", "1000", "ml") is None  # g against ml: not comparable
+    assert at("97.50", "100", "g", None, None) is None  # our pack size unknown
+    assert at("370", "400", "g", "1000", "g", loose=False) == D("370")  # a pack: as it is
+
+
+def test_a_word_starting_with_per_is_not_a_price_per_amount():
+    assert not parse("Perl Honey Dates Drink 250Ml").loose
+    assert not parse("Perfume Spray 100ml").loose
+    assert parse("Sugar per 1kg").loose and parse("Sugar per100g").loose

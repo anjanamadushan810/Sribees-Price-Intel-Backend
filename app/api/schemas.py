@@ -166,6 +166,10 @@ class ItemOut(ORM):
     last_mrp: Money | None
     in_stock: bool
     last_seen_at: datetime
+    # Sold loose: last_price is for size_value (none = 1 kg / 1 l); price_for_by is set
+    # when a person chose that amount.
+    loose: bool = False
+    price_for_by: uuid.UUID | None = None
 
 
 class CompetitorPrice(BaseModel):
@@ -175,6 +179,9 @@ class CompetitorPrice(BaseModel):
     status: str
     item: ItemOut
     fresh: bool
+    # The shop's price at our pack size: a bulk price scaled (owner 2026-11-04), a pack's
+    # price as it is; None when a bulk price cannot be compared (g against ml).
+    compare_price: Money | None = None
 
 
 class ProductRow(BaseModel):
@@ -223,6 +230,15 @@ class MatchQueueItem(BaseModel):
     product_image: str | None = None  # our photo, beside theirs
     method: str = "name"  # 'manual': a person added it from the shop's page
     flags: list[str] = []  # size or brand that does not agree, shown as a quiet icon
+    compare_price: Money | None = None  # their price at our pack size (bulk scaled)
+
+
+class PriceForIn(BaseModel):
+    """The amount a loose item's price is for, set by a person (Nexmart labels many 1 kg
+    prices "per 100 g")."""
+
+    size_value: Decimal = Field(gt=0, le=100000)
+    size_unit: Literal["g", "ml"]
 
 
 class ManualMatchIn(BaseModel):

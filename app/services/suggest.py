@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import BranchProduct, CompetitorItem, Product, ProductMatch, Setting, Suggestion
-from app.services import pricing, schedule
+from app.services import pricing, schedule, unitprice
 
 DEFAULT_PRICING = {"min_margin_pct": 5,
                    "stale_days": {"daily": 2, "weekly": 9, "monthly": 35, "long": 70}}
@@ -22,17 +22,20 @@ async def offers_by_product(db: AsyncSession, now: datetime, stale_days: dict
                             ) -> dict:
     """Fresh, in-stock prices of every live match, keyed by our product."""
     rows = await db.execute(
-        select(ProductMatch.product_id, CompetitorItem.competitor_id, CompetitorItem.last_price,
-               CompetitorItem.last_seen_at, Product.review_level)
-        .join(CompetitorItem, CompetitorItem.item_id == ProductMatch.item_id)
+        select(CompetitorItem, Product)
+        .join(ProductMatch, CompetitorItem.item_id == ProductMatch.item_id)
         .join(Product, Product.product_id == ProductMatch.product_id)
         .where(ProductMatch.status.in_(("auto", "confirmed")),
                CompetitorItem.in_stock.is_(True), CompetitorItem.last_price.is_not(None))
     )
     offers: dict = {}
-    for product_id, competitor_id, price, seen_at, level in rows:
-        if schedule.is_fresh(level, seen_at, now, stale_days):
-            offers.setdefault(product_id, []).append(pricing.Offer(competitor_id, price))
+    for item, prod in rows:
+        # A bulk price counts at our pack size (owner 2026-11-04), or not at all.
+        price = unitprice.for_item(item, prod)
+        if price is not None and schedule.is_fresh(prod.review_level, item.last_seen_at, now,
+                                                   stale_days):
+            offers.setdefault(prod.product_id, []).append(
+                pricing.Offer(item.competitor_id, price))
     return offers
 
 
