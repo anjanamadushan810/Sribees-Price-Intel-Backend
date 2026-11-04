@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, PlainSerializer
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, PlainSerializer, model_validator
 
 Money = Annotated[Decimal, PlainSerializer(lambda v: f"{v:.2f}", return_type=str)]
 Role = Literal["super_admin", "branch_manager", "marketing_manager", "price_checker"]
@@ -226,9 +226,19 @@ class MatchQueueItem(BaseModel):
 
 
 class ManualMatchIn(BaseModel):
+    """Either the shop's product page (url) or an item already in its list (item_id): some
+    shops, like Nexmart, show products in a pop-up and have no page per product."""
+
     product_id: uuid.UUID
     competitor_id: int
-    url: str = Field(min_length=8, max_length=1000)
+    url: str | None = Field(default=None, min_length=8, max_length=1000)
+    item_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ManualMatchIn":
+        if (self.url is None) == (self.item_id is None):
+            raise ValueError("give the shop's page link or pick an item from its list")
+        return self
 
 
 class MatchQueuePage(BaseModel):
