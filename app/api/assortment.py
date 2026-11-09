@@ -15,6 +15,7 @@ from app.api.schemas import (
     AssortmentItemOut,
     AssortmentPage,
     AssortmentStatsOut,
+    CrawlIn,
     CrawlStatusOut,
 )
 from app.core.db import get_db, get_sessionmaker
@@ -157,6 +158,31 @@ async def get_stats(
     )
 
 
+@router.post("/crawl")
+async def trigger_crawl_all_or_one(
+    background_tasks: BackgroundTasks,
+    body: CrawlIn | None = None,
+    _: Principal = Depends(require("scrape.run")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger an on-demand discovery crawl for all or a specific competitor."""
+    target_id = body.competitor_id if body else None
+    comp_name = "all competitors"
+    if target_id is not None:
+        competitor = await db.get(Competitor, target_id)
+        if competitor is None:
+            raise HTTPException(status_code=404, detail="competitor not found")
+        if competitor.kind != "scraped":
+            raise HTTPException(status_code=400, detail="only scraped competitors can be crawled")
+        comp_name = competitor.name
+
+    if discovery.is_running():
+        raise HTTPException(status_code=409, detail="A discovery crawl is already in progress")
+
+    background_tasks.add_task(discovery.run_discovery, get_sessionmaker(), target_id)
+    return {"status": "started", "competitor_id": target_id, "competitor": comp_name}
+
+
 @router.post("/crawl/{competitor_id}")
 async def trigger_crawl(
     competitor_id: int,
@@ -164,7 +190,7 @@ async def trigger_crawl(
     _: Principal = Depends(require("scrape.run")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger an on-demand discovery crawl for a competitor in the background."""
+    """Trigger an on-demand discovery crawl for a specific competitor in the background."""
     competitor = await db.get(Competitor, competitor_id)
     if competitor is None:
         raise HTTPException(status_code=404, detail="competitor not found")

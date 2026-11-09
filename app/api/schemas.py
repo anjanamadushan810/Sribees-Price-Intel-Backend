@@ -380,3 +380,8 @@ class CrawlStatusOut(BaseModel):
     competitor_id: int | None = None
     message: str | None = None
 
+
+class CrawlIn(BaseModel):
+    competitor_id: int | None = None
+
+
