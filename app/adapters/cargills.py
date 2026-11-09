@@ -14,7 +14,27 @@ from app.adapters.browser import Renderer
 CARD = ".cargillProdNeed"
 _PRICES = re.compile(r"Rs\.?\s*([\d,]+(?:\.\d+)?)")
 
+DISCOVERY_CATEGORIES: list[str] = [
+    "Dairy",
+    "Beverages",
+    "Grocery",
+    "Rice",
+    "Spices",
+    "Bakery",
+    "Meat & Seafood",
+    "Snacks & Confectionery",
+    "Household",
+    "Personal Care",
+    "Chilled & Frozen",
+    "Baby Care",
+    "Canned Food",
+    "Sauces & Spreads",
+    "Tea & Coffee",
+    "Biscuits",
+]
+
 # One object per card, read in the page so a re-render cannot mix two cards up.
+
 _READ_CARDS = """() => [...document.querySelectorAll('.cargillProdNeed')].map(c => ({
   name: c.querySelector('p[title]')?.getAttribute('title') || '',
   pack: c.querySelector('.dropbtn1')?.textContent.trim() || '',
@@ -73,3 +93,22 @@ class CargillsAdapter(Adapter):
             await page.close()
         items = [parse_card(c, self.client.base_url) for c in cards]
         return [i for i in items if i is not None]
+
+    async def discover_categories(
+        self, categories: list[str] | None = None
+    ) -> list[ListedItem]:
+        """Crawl common supermarket departments to discover competitor assortment."""
+        cats = categories or DISCOVERY_CATEGORIES
+        all_items: list[ListedItem] = []
+        seen_ids: set[str] = set()
+        for cat in cats:
+            try:
+                items = await self.search(cat)
+                for it in items:
+                    if it.external_id not in seen_ids:
+                        seen_ids.add(it.external_id)
+                        all_items.append(it)
+            except Exception:  # noqa: BLE001, S112
+                continue
+        return all_items
+

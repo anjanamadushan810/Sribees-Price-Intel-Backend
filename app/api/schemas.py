@@ -341,3 +341,42 @@ class SummaryOut(BaseModel):
     pending_suggestions: int
     match_queue: int
     sources_down: list[str]
+
+
+# ---------------------------------------------------------------- assortment / discovery
+class AssortmentItemOut(BaseModel):
+    item_id: uuid.UUID
+    competitor_id: int
+    competitor_name: str
+    name: str
+    brand: str | None = None
+    barcode: str | None = None
+    size_value: Decimal | None = None
+    size_unit: str | None = None
+    url: str | None = None
+    image_url: str | None = None
+    last_price: Money | None = None
+    last_mrp: Money | None = None
+    in_stock: bool
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+
+class AssortmentPage(BaseModel):
+    items: list[AssortmentItemOut]
+    total: int
+    page: int
+    pages: int
+
+
+class AssortmentStatsOut(BaseModel):
+    total_gaps: int
+    in_stock_gaps: int
+    new_this_week: int
+
+
+class CrawlStatusOut(BaseModel):
+    is_running: bool
+    competitor_id: int | None = None
+    message: str | None = None
+
