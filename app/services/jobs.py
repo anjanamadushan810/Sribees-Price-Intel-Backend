@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Competitor
-from app.services import catalog_sync, collect, digest, suggest
+from app.services import catalog_sync, collect, digest, discovery, suggest
 from app.services.online_client import OnlineClient
 
 log = logging.getLogger("intel.jobs")
@@ -46,6 +46,12 @@ async def daily(sessionmaker: async_sessionmaker, *, sync: bool = True,
                 run = await collect.run(sessionmaker, cid)
                 report[f"source_{cid}"] = {"status": run.status, "items": run.items_seen,
                                            "error": run.error}
+            for cid in competitor_ids or ids:
+                try:
+                    disc = await discovery.run_discovery(sessionmaker, cid)
+                    report[f"discovery_{cid}"] = disc
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("discovery for competitor %s failed: %s", cid, exc)
             async with sessionmaker() as db, db.begin():
                 report["suggestions"] = await suggest.refresh(db)
             async with sessionmaker() as db:
