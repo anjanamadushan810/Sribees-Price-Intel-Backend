@@ -44,7 +44,9 @@ def client_ip(request: Request) -> str | None:
     # Caddy sets X-Forwarded-For; the app only listens on the internal network.
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
+        # Caddy APPENDS the real peer; earlier entries come from the client and can be
+        # forged, so take the LAST one (same fix as Sribees Supply, 2026-11-12).
+        return forwarded.split(",")[-1].strip()[:64]
     return request.client.host if request.client else None
 
 
